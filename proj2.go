@@ -76,23 +76,87 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
+type FileInformation struct {
+	K1, K2, K3, K4 []byte
+	FileOwnerUsername []byte
+	AccessToken uuid.UUID
+}
+
 // User is the structure definition for a user record.
 type User struct {
 	Username string
+	PublicEncryptionKey userlib.PKEEncKey
+	PrivateEncryptionKey userlib.PKEDecKey
+	PublicSignatureKey userlib.DSVerifyKey
+	PrivateSignatureKey userlib.DSSignKey
+	PasswordAuthenticationKey []byte
+	FileMap map[string]FileInformation
+}
 
-	// You can add other fields here if you want...
-	// Note for JSON to marshal/unmarshal, the fields need to
-	// be public (start with a capital letter)
+type FileSharingTree struct {
+	Username []byte
+	AccessToken uuid.UUID
+	Children []FileSharingTree
+}
+
+type FileMetadata struct {
+	FileOwner []byte
+	NumFilePieces int
+	FileSharingTreeRoot FileSharingTree
+}
+
+type FilePiece struct {
+	FilePieceNum int
+	Data []byte
+}
+
+// Helper function: Pads array of bytes
+func pad(data []byte, blockSize int) (ret []byte) {
+	bytesToAdd := blockSize - ((len(data) + blockSize) % blockSize)
+	additionalBytes := make([]byte, bytesToAdd)
+    for i := range additionalBytes {
+        additionalBytes[i] = byte(bytesToAdd)
+    }
+	return append(data, additionalBytes...)
+}
+
+// Helper function: Unpads array of bytes
+func unpad(data []byte, blockSize int) (ret []byte) {
+	bytesToRemove := data[len(data) - 1]
+	return data[:len(data) - int(bytesToRemove)]
 }
 
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
-	userdataptr = &userdata
 
-	//TODO: This is a toy implementation.
 	userdata.Username = username
-	//End of toy implementation
+	//generate keys for user
+	userdata.PublicEncryptionKey, userdata.PrivateEncryptionKey, _ = userlib.PKEKeyGen()
+	userdata.PrivateSignatureKey, userdata.PublicSignatureKey, _ = userlib.DSKeyGen()
+	userdata.PasswordAuthenticationKey = userlib.Argon2Key([]byte(password), []byte(username), 128)
+
+	//marshal user struct to get array of bytes
+	userdataBytes, _ := json.Marshal(userdata)
+
+	//encrypt and MAC user struct
+	passwordHash := userlib.Hash([]byte(password))
+	encryptionKey := userlib.Argon2Key(passwordHash, []byte(username), 16)
+	userdataBytes = pad(userdataBytes, 16)
+	//TODO: LOOK INTO IV
+	encryptedUserdataBytes := userlib.SymEnc(encryptionKey, userlib.RandomBytes(16), userdataBytes)
+
+	//store encrypted user struct and HMAC in Datastore
+	hmacKey := userlib.Argon2Key(userlib.Hash(encryptionKey), []byte(username), 16)
+	userdataHMAC, _ := userlib.HMACEval(hmacKey, encryptedUserdataBytes)
+	storageUUIDBytes, _ := userlib.HashKDF(userlib.Argon2Key([]byte(password), []byte(username), 16), []byte("storage UUID"))
+	storageUUID := bytesToUUID(storageUUIDBytes)
+	userdataToStore :=  append(encryptedUserdataBytes, userdataHMAC...)
+	userlib.DatastoreSet(storageUUID, userdataToStore)
+
+	//store user public keys in keystore
+	userlib.KeystoreSet(username + "Public Encryption Key", userdata.PublicEncryptionKey)
+	userlib.KeystoreSet(username + "Public Signature Key", userdata.PublicSignatureKey)
 
 	return &userdata, nil
 }
