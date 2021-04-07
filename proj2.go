@@ -78,13 +78,14 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 
 type FileInformation struct {
 	K1, K2, K3, K4 []byte
-	FileOwnerUsername []byte
+	FileOwnerUsername string
 	AccessToken uuid.UUID
 }
 
 // User is the structure definition for a user record.
 type User struct {
 	Username string
+	Password string
 	PublicEncryptionKey userlib.PKEEncKey
 	PrivateEncryptionKey userlib.PKEDecKey
 	PublicSignatureKey userlib.DSVerifyKey
@@ -131,13 +132,18 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 
 	userdata.Username = username
+	userdata.Password = password
 	//generate keys for user
 	userdata.PublicEncryptionKey, userdata.PrivateEncryptionKey, _ = userlib.PKEKeyGen()
 	userdata.PrivateSignatureKey, userdata.PublicSignatureKey, _ = userlib.DSKeyGen()
 	userdata.PasswordAuthenticationKey = userlib.Argon2Key([]byte(password), []byte(username), 128)
+	userdata.FileMap = make(map[string]FileInformation)
 
 	//marshal user struct to get array of bytes
-	userdataBytes, _ := json.Marshal(userdata)
+	userdataBytes, err := json.Marshal(userdata)
+	if err != nil {
+		return &userdata, err
+	}
 
 	//encrypt and MAC user struct
 	passwordHash := userlib.Hash([]byte(password))
@@ -148,8 +154,14 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	//store encrypted user struct and HMAC in Datastore
 	hmacKey := userlib.Argon2Key(userlib.Hash(encryptionKey), []byte(username), 16)
-	userdataHMAC, _ := userlib.HMACEval(hmacKey, encryptedUserdataBytes)
-	storageUUIDBytes, _ := userlib.HashKDF(userlib.Argon2Key([]byte(password), []byte(username), 16), []byte("storage UUID"))
+	userdataHMAC, err := userlib.HMACEval(hmacKey, encryptedUserdataBytes)
+	if err != nil {
+		return &userdata, err
+	}
+	storageUUIDBytes, err := userlib.HashKDF(userlib.Argon2Key([]byte(password), []byte(username), 16), []byte("storage UUID"))
+	if err != nil {
+		return &userdata, err
+	}
 	storageUUID := bytesToUUID(storageUUIDBytes)
 	userdataToStore :=  append(encryptedUserdataBytes, userdataHMAC...)
 	userlib.DatastoreSet(storageUUID, userdataToStore)
@@ -161,79 +173,79 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	return &userdata, nil
 }
 
+func FetchUserStruct(username string, password string, userdataptr *User) (ret error) {
+	//calculate needed keys
+	passwordHash := userlib.Hash([]byte(password))
+	encryptionKey := userlib.Argon2Key(passwordHash, []byte(username), 16)
+	hmacKey := userlib.Argon2Key(userlib.Hash(encryptionKey), []byte(username), 16)
+	storageUUIDBytes, err := userlib.HashKDF(userlib.Argon2Key([]byte(password), []byte(username), 16), []byte("storage UUID"))
+	if err != nil {
+		*userdataptr = User{}
+		return err
+	}
+	storageUUID := bytesToUUID(storageUUIDBytes)
+
+	//fetch encrypted data from datastore
+	data_all, key_bool := userlib.DatastoreGet(storageUUID)
+
+	if key_bool == false {
+		*userdataptr = User{}
+		return errors.New(username + " password pair does not exist.")
+	}
+
+	//verify mac of encrypted data
+	data := data_all[:len(data_all) - 64]
+	hmac := data_all[len(data_all) - 64 :]
+
+	userdataHMAC, err := userlib.HMACEval(hmacKey, data)
+	if err != nil {
+		*userdataptr = User{}
+		return err
+	}
+
+	if !userlib.HMACEqual(userdataHMAC, hmac) {
+		*userdataptr = User{}
+		return errors.New("The data has been tampered with. Hmac incorrect!")
+	}
+
+	//convert to user struct object
+	decrypt_data_padded := userlib.SymDec(encryptionKey, data)
+	decrypt_data := unpad(decrypt_data_padded, 16)
+	unmarshal_error := json.Unmarshal(decrypt_data, userdataptr)
+
+	if unmarshal_error != nil {
+		*userdataptr = User{}
+		return unmarshal_error
+	}
+
+	//verify user's password
+	password_auth := userlib.Argon2Key([]byte(password), []byte(username), 128)
+
+	if string(userdataptr.PasswordAuthenticationKey) != string(password_auth) {
+		*userdataptr = User{}
+		return errors.New("The password authentication key is wrong.")
+	}
+
+	return nil
+}
 // GetUser is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/getuser.html
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
-	//check integrity
-	
-	passwordHash := userlib.Hash([]byte(password))
-
-	encryptionKey := userlib.Argon2Key(passwordHash, []byte(username), 16)
-
-	hmacKey := userlib.Argon2Key(userlib.Hash(encryptionKey), []byte(username), 16)
-
-
-	//calculate the key
-	
-	storageUUIDBytes, _ := userlib.HashKDF(userlib.Argon2Key([]byte(password), []byte(username), 16), []byte("storage UUID"))
-
-	storageUUID := bytesToUUID(storageUUIDBytes)
-
-	//fetch from datastore
-
-	data_all, key_bool := userlib.DatastoreGet(storageUUID)
-
-	if key_bool == false {
-		return nil, errors.New(username + " password pair does not exist.")
-	}
-
-	data := data_all[:len(data_all) - 64]
-	hmac := data_all[len(data_all) - 64 :]
-
-	//calculate hmac
-	userdataHMAC, _ := userlib.HMACEval(hmacKey, data)
-
-	//compare if mac is correct
-
-	if !userlib.HMACEqual(userdataHMAC, hmac) {
-		return nil, errors.New("The data has been tampered with. Hmac incorrect!")
-	}
-
-	decrypt_data_padded := userlib.SymDec(encryptionKey, data)
-
-	decrypt_data := unpad(decrypt_data_padded, 16)
-
-
-	//unmarshal
-
-	unmarshal_error := json.Unmarshal(decrypt_data, userdataptr)
-
-	if unmarshal_error != nil {
-		return nil, unmarshal_error
-	}
-
-	password_auth := userlib.Argon2Key([]byte(password), []byte(username), 128)
-
-	if string(userdata.PasswordAuthenticationKey) != string(password_auth) {
-		return nil, errors.New("The passwrod authetication key is wrong.")
-	}
-
-
-	return userdataptr, nil
+	err = FetchUserStruct(username, password, userdataptr)	
+	return userdataptr, err
 }
 
 // StoreFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/storefile.html
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
-	//TODO: This is a toy implementation.
+	//generate k1, k2, k3, and k4
 	k1, k2, k3, k4 := userlib.RandomBytes(16), userlib.RandomBytes(16), userlib.RandomBytes(16), userlib.RandomBytes(16)
 	
+	//create file metadata struct
 	var fileMetaData FileMetadata
-
-
 	fileMetaData.FileOwner = userdata.Username
 	fileMetaData.NumFilePieces = 1
 
@@ -242,39 +254,95 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	fileSharingTree.AccessToken = uuid.New()
 	fileSharingTree.Children = make([]*FileSharingTree, 0)
 
-
 	fileMetaData.FileSharingTreeRoot = &fileSharingTree
 
-	var filePiece FilePiece
-	filePiece.FilePieceNum = 1
-	filePiece.Data = data
-
-	fileMetaDataMarsh, error := json.Marshal(fileMetaData)
-	if error != nil {
-		return error
+	//store file metadata in datastore
+	fileMetaDataMarsh, err := json.Marshal(fileMetaData)
+	if err != nil {
+		return err
 	}
-
 	fileMetaDataMarshPad := pad(fileMetaDataMarsh, 16)
 
 	metadataSalt := make([]byte, 1)
 	metadataSalt[0] = byte(1)
+	metadataEncryptionKey := userlib.Argon2Key(k2, metadataSalt, 16)
+	encryptedMetadata := userlib.SymEnc(metadataEncryptionKey, userlib.RandomBytes(16), fileMetaDataMarshPad)
 
-
-	encryptedMetadata := userlib.SymEnc(userlib.Argon2Key(k2, metadataSalt, 16), userlib.RandomBytes(16) , fileMetaDataMarshPad)
-
-	hmacKey := userlib.Argon2Key(k3, metadataSalt, 16)
-
-	userdataHMAC, _ := userlib.HMACEval(hmacKey, data)
-
-	metadataToStore := append(encryptedMetadata, userdataHMAC...)
-
+	metadataHmacKey := userlib.Argon2Key(k3, metadataSalt, 16)
+	fileMetadataHMAC, err := userlib.HMACEval(metadataHmacKey, encryptedMetadata)
+	if err != nil {
+		return err
+	}
+	metadataToStore := append(encryptedMetadata, fileMetadataHMAC...)
 	userlib.DatastoreSet(bytesToUUID(k1), metadataToStore)
 
+	//create file piece struct  
+	var filePiece FilePiece
+	filePiece.FilePieceNum = 1
+	filePiece.Data = data
 
+	//store file piece in datastore
+	filePieceMarsh, err := json.Marshal(filePiece)
+	if err != nil {
+		return err
+	}
 
-	//End of toy implementation
+	filePieceMarshPad := pad(filePieceMarsh, 16)
+	filePieceSalt := make([]byte, 1)
+	filePieceSalt[0] = byte(filePiece.FilePieceNum + 1)
+	filePieceEncryptionKey := userlib.Argon2Key(k2, filePieceSalt, 16)
+	encryptedFilePiece := userlib.SymEnc(filePieceEncryptionKey, userlib.RandomBytes(16), filePieceMarshPad)
 
-	return
+	filePieceHmacKey := userlib.Argon2Key(k3, filePieceSalt, 16)
+	filePieceHMAC, err := userlib.HMACEval(filePieceHmacKey, encryptedFilePiece)
+	if err != nil {
+		return err
+	}
+	filePieceToStore := append(encryptedFilePiece, filePieceHMAC...)
+	filePieceUUID := bytesToUUID(userlib.Argon2Key(k4, filePieceSalt, 16))
+	userlib.DatastoreSet(filePieceUUID, filePieceToStore)
+
+	//update user struct with file
+	err = FetchUserStruct(userdata.Username, userdata.Password, userdata)
+	if err != nil {
+		return err
+	}
+
+	var fileInformation FileInformation
+	fileInformation.K1 = k1
+	fileInformation.K2 = k2
+	fileInformation.K3 = k3
+	fileInformation.K4 = k4
+	fileInformation.FileOwnerUsername = userdata.Username
+	fileInformation.AccessToken  = fileMetaData.FileSharingTreeRoot.AccessToken
+	userdata.FileMap[filename] = fileInformation
+	userdataBytes, err := json.Marshal(*userdata)
+	if err != nil {
+		return err
+	}
+
+	//encrypt and MAC user struct
+	passwordHash := userlib.Hash([]byte(userdata.Password))
+	userStructEncryptionKey := userlib.Argon2Key(passwordHash, []byte(userdata.Username), 16)
+	userdataBytes = pad(userdataBytes, 16)
+	//TODO: LOOK INTO IV
+	encryptedUserdataBytes := userlib.SymEnc(userStructEncryptionKey, userlib.RandomBytes(16), userdataBytes)
+
+	//store encrypted user struct and HMAC in Datastore
+	userStructHMACKey := userlib.Argon2Key(userlib.Hash(userStructEncryptionKey), []byte(userdata.Username), 16)
+	userdataHMAC, err := userlib.HMACEval(userStructHMACKey, encryptedUserdataBytes)
+	if err != nil {
+		return err
+	}
+	storageUUIDBytes, err := userlib.HashKDF(userlib.Argon2Key([]byte(userdata.Password), []byte(userdata.Username), 16), []byte("storage UUID"))
+	if err != nil {
+		return err
+	}
+	storageUUID := bytesToUUID(storageUUIDBytes)
+	userdataToStore :=  append(encryptedUserdataBytes, userdataHMAC...)
+	userlib.DatastoreSet(storageUUID, userdataToStore)
+
+	return nil
 }
 
 // AppendFile is documented at:
