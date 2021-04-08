@@ -307,25 +307,28 @@ func (userdata *User) ReadAndVerifyFileMetadata(filename string) (K1 []byte, K2 
 			return
 		}
 		//check signature on marshalled message
-		//TODO: FIGURE OUT  RSA SIGNATURE LENGTH
-		encryptedMessage := message[:len(message) - 256]
+		encryptedSymmetricKey := message[:256]
+		encryptedMessage := message[256:len(message) - 256]
 		messageSignature := message[len(message) - 256:]
 		signatureVerificationKey, ok := userlib.KeystoreGet(fileInformation.FileOwnerUsername + "Public Signature Key") 
 		if ok == false {
 			err = errors.New("Can't find public signature key of file owner")
 			return
 		}
-		err = userlib.DSVerify(signatureVerificationKey, encryptedMessage, messageSignature) 
+		err = userlib.DSVerify(signatureVerificationKey, message[:len(message) - 256], messageSignature) 
 		if err != nil {
 			return 
 		}
-		var decryptedMessage []byte
-		decryptedMessage, err = userlib.PKEDec(userdata.PrivateEncryptionKey, encryptedMessage)
+		var decryptedSymmetricKey []byte
+		decryptedSymmetricKey, err = userlib.PKEDec(userdata.PrivateEncryptionKey, encryptedSymmetricKey)
 		if err != nil {
 			return 
 		}
+		decryptedMessage := userlib.SymDec(decryptedSymmetricKey, encryptedMessage)
+
+		
 		var fileMessage FileMessage
-		err = json.Unmarshal(decryptedMessage, &fileMessage)
+		err = json.Unmarshal(unpad(decryptedMessage, 16), &fileMessage)
 		if err != nil {
 			return
 		}
@@ -695,20 +698,22 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		err = errors.New("Can't find public Encryption key of recipient")
 		return
 	}
-	var encMessage []byte
-	encMessage, err = userlib.PKEEnc(publicEncryptionKey, marshalledMessage)
+
+	derivedSymmetricKey := userlib.RandomBytes(16) 
+	var encryptedSymmetricKey []byte
+	encryptedSymmetricKey, err = userlib.PKEEnc(publicEncryptionKey, derivedSymmetricKey)
 	if err != nil {
 		return 
 	}
+	encMessage := userlib.SymEnc(derivedSymmetricKey, userlib.RandomBytes(16), pad(marshalledMessage, 16)) 
+
 	var dsSign []byte
-	dsSign, err = userlib.DSSign(userdata.PrivateSignatureKey, encMessage) 
-
+	dsSign, err = userlib.DSSign(userdata.PrivateSignatureKey, append(encryptedSymmetricKey, encMessage...)) 
 	if err != nil {
 		return 
 	}
 
-	
-	userlib.DatastoreSet(accessToken, append(encMessage, dsSign...))
+	userlib.DatastoreSet(accessToken, append(append(encryptedSymmetricKey, encMessage...), dsSign...))
 
 	return
 }
