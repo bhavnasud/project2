@@ -149,6 +149,19 @@ func checkIntegrity(data_all []byte, hmacKey []byte) (data []byte, err error) {
 	return
 }
 
+func findPersonSharingTree(fileSharingTree *FileSharingTree, personName string) (personSharingTree *FileSharingTree) {
+	if fileSharingTree.Username == personName {
+		return fileSharingTree
+	} 
+	for _, child := range fileSharingTree.Children {
+		personSharingTree = findPersonSharingTree(child, personName)
+		if personSharingTree != nil {
+			return
+		}
+	}
+	return nil
+}
+
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
@@ -617,8 +630,85 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 
 // ShareFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/sharefile.html
-func (userdata *User) ShareFile(filename string, recipient string) (
-	accessToken uuid.UUID, err error) {
+func (userdata *User) ShareFile(filename string, recipient string) (accessToken uuid.UUID, err error) {
+	//get userstruct
+	if err = userdata.FetchUserStruct(userdata.Username , userdata.Password) ; err != nil {
+		return 
+	}
+	//get metadata using helper methods
+	var K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey []byte
+	K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey, err = userdata.ReadAndVerifyFileMetadata(filename)
+	if err != nil {
+		return 
+	}
+	//decrypt the metadata and unmarshal metadata
+	decrypt_metadata_padded := userlib.SymDec(metadataEncryptionKey, encryptedMetadata)
+	decrypt_metadata := unpad(decrypt_metadata_padded, 16)
+	var fileMetadata FileMetadata
+
+	if unmarshal_error := json.Unmarshal(decrypt_metadata, &fileMetadata);  unmarshal_error != nil {
+		err = unmarshal_error
+		return 
+	}
+
+	//update metadata with new recipient 
+	fileSharingTree := fileMetadata.FileSharingTreeRoot
+
+	senderSharingTree := findPersonSharingTree(fileSharingTree , userdata.Username)
+
+	var recipientSharingTree FileSharingTree
+	recipientSharingTree.Username = recipient
+	accessToken =uuid.New()
+	recipientSharingTree.AccessToken = accessToken
+	recipientSharingTree.Children = make([]*FileSharingTree, 0)
+
+	senderSharingTree.Children = append(senderSharingTree.Children, &recipientSharingTree)
+
+	var reMarshalledMetadata []byte
+	reMarshalledMetadata, err = json.Marshal(&fileMetadata)
+	if err != nil {
+		return 
+	}
+	reencryptedMetadata := userlib.SymEnc(metadataEncryptionKey, userlib.RandomBytes(16), pad(reMarshalledMetadata, 16)) 
+	newMetadataHMAC, err := userlib.HMACEval(metadataHmacKey, reencryptedMetadata)
+	if err != nil {
+		return 
+	}
+	//store updated metadata in datastore
+	userlib.DatastoreSet(bytesToUUID(K1), append(reencryptedMetadata, newMetadataHMAC...))
+
+	//create file message struct
+	var fileMessage FileMessage
+
+	fileMessage.Revoked = false
+	fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4 = K1, K2, K3, K4
+
+
+	//encrypt and store file message
+	var marshalledMessage []byte
+	marshalledMessage, err = json.Marshal(&fileMessage)
+	if err != nil {
+		return 
+	}
+	publicEncryptionKey, ok := userlib.KeystoreGet(recipient + "Public Encryption Key") 
+	if ok == false {
+		err = errors.New("Can't find public Encryption key of recipient")
+		return
+	}
+	var encMessage []byte
+	encMessage, err = userlib.PKEEnc(publicEncryptionKey, marshalledMessage)
+	if err != nil {
+		return 
+	}
+	var dsSign []byte
+	dsSign, err = userlib.DSSign(userdata.PrivateSignatureKey, encMessage) 
+
+	if err != nil {
+		return 
+	}
+
+	
+	userlib.DatastoreSet(accessToken, append(encMessage, dsSign...))
 
 	return
 }
