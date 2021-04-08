@@ -111,6 +111,11 @@ type FilePiece struct {
 	Data []byte
 }
 
+type FileMessage struct {
+	Revoked bool
+	K1, K2, K3, K4 []byte
+}
+
 // Helper function: Pads array of bytes
 func pad(data []byte, blockSize int) (ret []byte) {
 	bytesToAdd := blockSize - ((len(data) + blockSize) % blockSize)
@@ -173,7 +178,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	return &userdata, nil
 }
 
-func FetchUserStruct(username string, password string, userdataptr *User) (ret error) {
+func (userdataptr *User) FetchUserStruct(username string, password string) (ret error) {
 	//calculate needed keys
 	passwordHash := userlib.Hash([]byte(password))
 	encryptionKey := userlib.Argon2Key(passwordHash, []byte(username), 16)
@@ -233,13 +238,183 @@ func FetchUserStruct(username string, password string, userdataptr *User) (ret e
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
-	err = FetchUserStruct(username, password, userdataptr)	
+	err = userdataptr.FetchUserStruct(username, password)	
 	return userdataptr, err
+}
+
+func (userdata *User) ReadAndVerifyFileMetadata(filename string) (K1 []byte, K2 []byte, K3 []byte, K4 []byte, encryptedMetadata []byte, metadataEncryptionKey []byte, metadataHmacKey []byte, err error) {
+	//read file  information struct from user struct, get k1, k2, k3, k4 for file
+	fileInformation, ok := userdata.FileMap[filename]
+	if ok == false {
+		err = errors.New("File name doesn't exist")
+		return
+	}
+	K1, K2, K3, K4 = fileInformation.K1, fileInformation.K2, fileInformation.K3, fileInformation.K4
+	//read file metadata from datastore and check its integrity
+	metadataSalt := make([]byte, 1)
+	metadataSalt[0] = byte(1)
+	metadataEncryptionKey = userlib.Argon2Key(K2, metadataSalt, 16)
+	metadataHmacKey = userlib.Argon2Key(K3, metadataSalt, 16)
+	fileMetadata, ok := userlib.DatastoreGet(bytesToUUID(K1))
+	fileMetadataOkay := true
+	if ok == false {
+		fileMetadataOkay = false
+	} else {
+		encryptedMetadata = fileMetadata[:len(fileMetadata) - 64]
+		storedMetadataHMAC := fileMetadata[len(fileMetadata) - 64:]
+		var fileMetadataHMAC []byte
+		fileMetadataHMAC, err = userlib.HMACEval(metadataHmacKey, encryptedMetadata)
+		if err != nil {
+			return
+		}
+		if userlib.HMACEqual(storedMetadataHMAC, fileMetadataHMAC) ==  false{
+			fileMetadataOkay = false
+		}
+	}
+	//if reading file metadata fails (either key doesn't exist or mac doesn't validate, check accessToken in datastore for new keys)
+	if fileMetadataOkay == false {
+		//check for message at accessToken for new keys, unless you are file owner
+		if fileInformation.FileOwnerUsername == userdata.Username {
+			err = errors.New("Your file has been messed with")
+			return
+		}
+		accessToken := fileInformation.AccessToken
+		message, ok := userlib.DatastoreGet(accessToken) 
+		if ok == false {
+			err = errors.New("Your inbox has been messed with")
+			return
+		}
+		//check signature on marshalled message
+		//TODO: FIGURE OUT  RSA SIGNATURE LENGTH
+		encryptedMessage := message[:len(message) - 256]
+		messageSignature := message[len(message) - 256:]
+		signatureVerificationKey, ok := userlib.KeystoreGet(fileInformation.FileOwnerUsername + "Public Signature Key") 
+		if ok == false {
+			err = errors.New("Can't find public signature key of file owner")
+			return
+		}
+		err = userlib.DSVerify(signatureVerificationKey, encryptedMessage, messageSignature) 
+		if err != nil {
+			return 
+		}
+		var decryptedMessage []byte
+		decryptedMessage, err = userlib.PKEDec(userdata.PrivateEncryptionKey, encryptedMessage)
+		if err != nil {
+			return 
+		}
+		var fileMessage FileMessage
+		err = json.Unmarshal(decryptedMessage, &fileMessage)
+		if err != nil {
+			return
+		}
+		if fileMessage.Revoked == true {
+			err = errors.New("Your access has been revoked")
+			return
+		}
+		K1, K2, K3, K4 = fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4
+
+		//try reading file metadata again
+		fileMetadata, ok := userlib.DatastoreGet(bytesToUUID(K1))
+		if ok == false {
+			err = errors.New("Still can't get metadata even with new keys")
+			return
+		} else {
+			encryptedMetadata = fileMetadata[:len(fileMetadata) - 64]
+			storedMetadataHMAC := fileMetadata[len(fileMetadata) - 64:]
+			var fileMetadataHMAC []byte
+			fileMetadataHMAC, err = userlib.HMACEval(metadataHmacKey, encryptedMetadata)
+			if err != nil {
+				return 
+			}
+			if userlib.HMACEqual(storedMetadataHMAC, fileMetadataHMAC) ==  false {
+				err = errors.New("File metadata MAC doesn't validate even with new keys")
+				return
+			}
+		}
+	}
+	return
+}
+
+func AddNewFilePiece(filePieceNum int, data []byte, k2 []byte, k3 []byte, k4 []byte) (err error) {
+	//create file piece struct  
+	var filePiece FilePiece
+	filePiece.FilePieceNum = filePieceNum
+	filePiece.Data = data
+
+	//store file piece in datastore
+	var filePieceMarsh []byte
+	filePieceMarsh, err = json.Marshal(filePiece)
+	if err != nil {
+		return err
+	}
+
+	filePieceMarshPad := pad(filePieceMarsh, 16)
+	filePieceSalt := make([]byte, 1)
+	filePieceSalt[0] = byte(filePiece.FilePieceNum + 1)
+	filePieceEncryptionKey := userlib.Argon2Key(k2, filePieceSalt, 16)
+	encryptedFilePiece := userlib.SymEnc(filePieceEncryptionKey, userlib.RandomBytes(16), filePieceMarshPad)
+
+	filePieceHmacKey := userlib.Argon2Key(k3, filePieceSalt, 16)
+	filePieceHMAC, err := userlib.HMACEval(filePieceHmacKey, encryptedFilePiece)
+	if err != nil {
+		return err
+	}
+	filePieceToStore := append(encryptedFilePiece, filePieceHMAC...)
+	filePieceUUID := bytesToUUID(userlib.Argon2Key(k4, filePieceSalt, 16))
+	userlib.DatastoreSet(filePieceUUID, filePieceToStore)
+	return nil
+}
+
+func (userdata *User) UpdateFile(filename string, data[]byte) (err error) {
+	userdata.FetchUserStruct(userdata.Username, userdata.Password)
+	//read the metadata and verify it, check inbox for new keys
+	var K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey []byte
+	K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey, err = userdata.ReadAndVerifyFileMetadata(filename) 
+	if err != nil {
+		return err
+	}
+	//decrypt file metadata, update with new file information, then reencrypt/mac metadata
+	decryptedMetadata := unpad(userlib.SymDec(metadataEncryptionKey, encryptedMetadata), 16)
+	var metadata FileMetadata
+	err = json.Unmarshal(decryptedMetadata, &metadata)
+	if err != nil {
+		return err
+	}
+	metadata.NumFilePieces = 1
+	reMarshalledMetadata, err := json.Marshal(&metadata)
+	if err != nil {
+		return err
+	}
+	reencryptedMetadata := userlib.SymEnc(metadataEncryptionKey, userlib.RandomBytes(16), pad(reMarshalledMetadata, 16)) 
+	newMetadataHMAC, err := userlib.HMACEval(metadataHmacKey, reencryptedMetadata)
+	if err != nil {
+		return err
+	}
+	//store updated metadata in datastore
+	userlib.DatastoreSet(bytesToUUID(K1), append(reencryptedMetadata, newMetadataHMAC...))
+
+	//create new piece of file and marshal/encrypt + mac it, store in datastore
+	if err = AddNewFilePiece(1, data, K2, K3, K4); err != nil {
+		return err
+	}
+	return nil
 }
 
 // StoreFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/storefile.html
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
+
+	//TODO: UPDATE FOR WHEN FILE ALREADY EXISTS
+
+	err = userdata.FetchUserStruct(userdata.Username, userdata.Password)
+	if err != nil {
+		return err
+	}
+
+	_, ok := userdata.FileMap[filename]
+	if ok == true {
+		return userdata.UpdateFile(filename, data)
+	}
 
 	//generate k1, k2, k3, and k4
 	k1, k2, k3, k4 := userlib.RandomBytes(16), userlib.RandomBytes(16), userlib.RandomBytes(16), userlib.RandomBytes(16)
@@ -276,38 +451,13 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	metadataToStore := append(encryptedMetadata, fileMetadataHMAC...)
 	userlib.DatastoreSet(bytesToUUID(k1), metadataToStore)
 
-	//create file piece struct  
-	var filePiece FilePiece
-	filePiece.FilePieceNum = 1
-	filePiece.Data = data
-
-	//store file piece in datastore
-	filePieceMarsh, err := json.Marshal(filePiece)
+	//create and store new file piece
+	err = AddNewFilePiece(1, data, k2, k3, k4)
 	if err != nil {
 		return err
 	}
 
-	filePieceMarshPad := pad(filePieceMarsh, 16)
-	filePieceSalt := make([]byte, 1)
-	filePieceSalt[0] = byte(filePiece.FilePieceNum + 1)
-	filePieceEncryptionKey := userlib.Argon2Key(k2, filePieceSalt, 16)
-	encryptedFilePiece := userlib.SymEnc(filePieceEncryptionKey, userlib.RandomBytes(16), filePieceMarshPad)
-
-	filePieceHmacKey := userlib.Argon2Key(k3, filePieceSalt, 16)
-	filePieceHMAC, err := userlib.HMACEval(filePieceHmacKey, encryptedFilePiece)
-	if err != nil {
-		return err
-	}
-	filePieceToStore := append(encryptedFilePiece, filePieceHMAC...)
-	filePieceUUID := bytesToUUID(userlib.Argon2Key(k4, filePieceSalt, 16))
-	userlib.DatastoreSet(filePieceUUID, filePieceToStore)
-
-	//update user struct with file
-	err = FetchUserStruct(userdata.Username, userdata.Password, userdata)
-	if err != nil {
-		return err
-	}
-
+	//update userstruct with file
 	var fileInformation FileInformation
 	fileInformation.K1 = k1
 	fileInformation.K2 = k2
@@ -348,7 +498,43 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 // AppendFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/appendfile.html
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
-	return
+	//get and verify user struct
+	err = userdata.FetchUserStruct(userdata.Username, userdata.Password)
+	if err != nil {
+		return err
+	}
+	
+	var K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey []byte
+	K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey, err = userdata.ReadAndVerifyFileMetadata(filename)
+	if err != nil {
+		return err
+	}
+
+	//decrypt file metadata, append new file piece information to it, then reencrypt/mac metadata
+	decryptedMetadata := unpad(userlib.SymDec(metadataEncryptionKey, encryptedMetadata), 16)
+	var metadata FileMetadata
+	err = json.Unmarshal(decryptedMetadata, &metadata)
+	if err != nil {
+		return err
+	}
+	metadata.NumFilePieces += 1
+	reMarshalledMetadata, err := json.Marshal(&metadata)
+	if err != nil {
+		return err
+	}
+	reencryptedMetadata := userlib.SymEnc(metadataEncryptionKey, userlib.RandomBytes(16), pad(reMarshalledMetadata, 16)) 
+	newMetadataHMAC, err := userlib.HMACEval(metadataHmacKey, reencryptedMetadata)
+	if err != nil {
+		return err
+	}
+	//store updated metadata in datastore
+	userlib.DatastoreSet(bytesToUUID(K1), append(reencryptedMetadata, newMetadataHMAC...))
+	//make new file piece, marshal + encrypt and mac it, store it in datastore
+	err = AddNewFilePiece(metadata.NumFilePieces, data, K2, K3, K4)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // LoadFile is documented at:
