@@ -132,6 +132,23 @@ func unpad(data []byte, blockSize int) (ret []byte) {
 	return data[:len(data) - int(bytesToRemove)]
 }
 
+func checkIntegrity(data_all []byte, hmacKey []byte) (data []byte, err error) {
+		//verify mac of encrypted data
+	data = data_all[:len(data_all) - 64]
+	hmac := data_all[len(data_all) - 64 :]
+
+	userdataHMAC, err := userlib.HMACEval(hmacKey, data)
+	if err != nil {
+		return 
+	}
+
+	if !userlib.HMACEqual(userdataHMAC, hmac) {
+		err = errors.New("The data has been tampered with. Hmac incorrect!")
+		return 
+	}
+	return
+}
+
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
@@ -197,20 +214,12 @@ func (userdataptr *User) FetchUserStruct(username string, password string) (ret 
 		*userdataptr = User{}
 		return errors.New(username + " password pair does not exist.")
 	}
+	var data []byte
 
-	//verify mac of encrypted data
-	data := data_all[:len(data_all) - 64]
-	hmac := data_all[len(data_all) - 64 :]
-
-	userdataHMAC, err := userlib.HMACEval(hmacKey, data)
+	data, err = checkIntegrity(data_all, hmacKey)
 	if err != nil {
 		*userdataptr = User{}
 		return err
-	}
-
-	if !userlib.HMACEqual(userdataHMAC, hmac) {
-		*userdataptr = User{}
-		return errors.New("The data has been tampered with. Hmac incorrect!")
 	}
 
 	//convert to user struct object
@@ -541,15 +550,67 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 // https://cs161.org/assets/projects/2/docs/client_api/loadfile.html
 func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 
-	//TODO: This is a toy implementation.
-	storageKey, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	dataJSON, ok := userlib.DatastoreGet(storageKey)
-	if !ok {
-		return nil, errors.New(strings.ToTitle("File not found!"))
+	//get userstruct user helper function
+	if err = userdata.FetchUserStruct(userdata.Username , userdata.Password) ; err != nil {
+		return 
 	}
-	json.Unmarshal(dataJSON, &dataBytes)
-	return dataBytes, nil
-	//End of toy implementation
+	//get the file metadata & check for integrity
+	var K2, K3, K4, encryptedMetadata, metadataEncryptionKey []byte
+	_, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, _, err = userdata.ReadAndVerifyFileMetadata(filename)
+	if err != nil {
+		return 
+	}
+	//decrypt the metadata
+	decrypt_metadata_padded := userlib.SymDec(metadataEncryptionKey, encryptedMetadata)
+	decrypt_metadata := unpad(decrypt_metadata_padded, 16)
+	var fileMetadata FileMetadata
+
+	if unmarshal_error := json.Unmarshal(decrypt_metadata, &fileMetadata);  unmarshal_error != nil {
+		err = unmarshal_error
+		return 
+	}
+	//iterate over each piece of the file and do craziness to it
+	var data []byte
+
+	for i := 1; i < fileMetadata.NumFilePieces + 1; i++ {
+		//encryption key, mackey, location key
+		filePieceSalt := make([]byte, 1)
+		filePieceSalt[0] = byte(i + 1)
+		filePieceHmacKey := userlib.Argon2Key(K3, filePieceSalt, 16)
+
+		filePieceEncKey := userlib.Argon2Key(K2, filePieceSalt, 16)
+
+		filePieceLocationKey := userlib.Argon2Key(K4, filePieceSalt, 16)
+
+		//get from datastore
+		data_all, ok := userlib.DatastoreGet(bytesToUUID(filePieceLocationKey))
+		if ok == false {
+			err = errors.New("During LoadFile, you are not able to get the data from datastore.")
+			return 
+		}
+
+		//check interity
+
+		data, err = checkIntegrity(data_all, filePieceHmacKey)
+		if err != nil {
+			return 
+		}
+		//decrypt
+		
+		decrypt_data_padded := userlib.SymDec(filePieceEncKey, data)
+		decrypt_data := unpad(decrypt_data_padded, 16)
+
+		var filePiece FilePiece
+		unmarshal_error := json.Unmarshal(decrypt_data, &filePiece)
+
+		if unmarshal_error != nil {
+			err = unmarshal_error
+			return 
+		}
+		dataBytes = append(dataBytes, filePiece.Data...)
+
+	}
+
 
 	return
 }
