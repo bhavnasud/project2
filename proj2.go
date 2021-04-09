@@ -781,6 +781,8 @@ func (userdata *User) ReceiveFile(filename string, sender string, accessToken uu
 	var fileOwner string
 	K1, K2, K3, K4, fileOwner, err = getKeysFromInbox("", accessToken, sender, userdata.PrivateEncryptionKey) 
 
+	//TODO: CHECK SECOND INBOX - probably not because it will be checked when user tries action on file if these keys don't work
+	
 	//add file keys/file owner/accessToken/filesharer to user struct
 	var fileInformation FileInformation
 	fileInformation.K1, fileInformation.K2, fileInformation.K3, fileInformation.K4 = K1, K2, K3, K4
