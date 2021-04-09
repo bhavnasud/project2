@@ -80,6 +80,7 @@ type FileInformation struct {
 	K1, K2, K3, K4 []byte
 	FileOwnerUsername string
 	AccessToken uuid.UUID
+	FileSharerUsername string
 }
 
 // User is the structure definition for a user record.
@@ -114,6 +115,7 @@ type FilePiece struct {
 type FileMessage struct {
 	Revoked bool
 	K1, K2, K3, K4 []byte
+	FileOwner string
 }
 
 // Helper function: Pads array of bytes
@@ -162,9 +164,40 @@ func findPersonSharingTree(fileSharingTree *FileSharingTree, personName string) 
 	return nil
 }
 
+func StoreUpdatedUserStruct(userdata *User) (err error) {
+	userdataBytes, err := json.Marshal(userdata)
+	if err != nil {
+		return
+	}
+
+	//encrypt and MAC user struct
+	passwordHash := userlib.Hash([]byte(userdata.Password))
+	encryptionKey := userlib.Argon2Key(passwordHash, []byte(userdata.Username), 16)
+	userdataBytes = pad(userdataBytes, 16)
+	//TODO: LOOK INTO IV
+	encryptedUserdataBytes := userlib.SymEnc(encryptionKey, userlib.RandomBytes(16), userdataBytes)
+
+	hmacKey := userlib.Argon2Key(userlib.Hash(encryptionKey), []byte(userdata.Username), 16)
+	var userdataHMAC []byte
+	userdataHMAC, err = userlib.HMACEval(hmacKey, encryptedUserdataBytes)
+	if err != nil {
+		return 
+	}
+	var storageUUIDBytes []byte
+	storageUUIDBytes, err = userlib.HashKDF(userlib.Argon2Key([]byte(userdata.Password), []byte(userdata.Username), 16), []byte("storage UUID"))
+	if err != nil {
+		return
+	}
+	storageUUID := bytesToUUID(storageUUIDBytes)
+	userdataToStore :=  append(encryptedUserdataBytes, userdataHMAC...)
+	userlib.DatastoreSet(storageUUID, userdataToStore)
+	return
+}
+
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
+	userdataptr = &userdata
 
 	userdata.Username = username
 	userdata.Password = password
@@ -174,38 +207,16 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	userdata.PasswordAuthenticationKey = userlib.Argon2Key([]byte(password), []byte(username), 128)
 	userdata.FileMap = make(map[string]FileInformation)
 
-	//marshal user struct to get array of bytes
-	userdataBytes, err := json.Marshal(userdata)
+	err =  StoreUpdatedUserStruct(userdataptr)
 	if err != nil {
-		return &userdata, err
+		return
 	}
-
-	//encrypt and MAC user struct
-	passwordHash := userlib.Hash([]byte(password))
-	encryptionKey := userlib.Argon2Key(passwordHash, []byte(username), 16)
-	userdataBytes = pad(userdataBytes, 16)
-	//TODO: LOOK INTO IV
-	encryptedUserdataBytes := userlib.SymEnc(encryptionKey, userlib.RandomBytes(16), userdataBytes)
-
-	//store encrypted user struct and HMAC in Datastore
-	hmacKey := userlib.Argon2Key(userlib.Hash(encryptionKey), []byte(username), 16)
-	userdataHMAC, err := userlib.HMACEval(hmacKey, encryptedUserdataBytes)
-	if err != nil {
-		return &userdata, err
-	}
-	storageUUIDBytes, err := userlib.HashKDF(userlib.Argon2Key([]byte(password), []byte(username), 16), []byte("storage UUID"))
-	if err != nil {
-		return &userdata, err
-	}
-	storageUUID := bytesToUUID(storageUUIDBytes)
-	userdataToStore :=  append(encryptedUserdataBytes, userdataHMAC...)
-	userlib.DatastoreSet(storageUUID, userdataToStore)
 
 	//store user public keys in keystore
 	userlib.KeystoreSet(username + "Public Encryption Key", userdata.PublicEncryptionKey)
 	userlib.KeystoreSet(username + "Public Signature Key", userdata.PublicSignatureKey)
 
-	return &userdata, nil
+	return 
 }
 
 func (userdataptr *User) FetchUserStruct(username string, password string) (ret error) {
@@ -255,6 +266,85 @@ func (userdataptr *User) FetchUserStruct(username string, password string) (ret 
 
 	return nil
 }
+
+func readInbox(inboxLocation uuid.UUID, signatureVerificationKey userlib.DSVerifyKey, privateEncryptionKey userlib.PKEDecKey) (fileMessage FileMessage, err error) {
+	message, ok := userlib.DatastoreGet(inboxLocation) 
+	if ok == false {
+		err = errors.New("The inbox location doesn't have any messages")
+		return
+	}
+	//check signature on marshalled message
+	encryptedSymmetricKey := message[:256]
+	encryptedMessage := message[256:len(message) - 256]
+	messageSignature := message[len(message) - 256:]
+
+	if err = userlib.DSVerify(signatureVerificationKey, message[:len(message) - 256], messageSignature); err != nil {
+		return
+	}
+
+	var decryptedSymmetricKey []byte
+	decryptedSymmetricKey, err = userlib.PKEDec(privateEncryptionKey, encryptedSymmetricKey)
+	if err != nil {
+		return 
+	}
+	decryptedMessage := userlib.SymDec(decryptedSymmetricKey, encryptedMessage)
+
+	if err = json.Unmarshal(unpad(decryptedMessage, 16), &fileMessage); err != nil {
+		return
+	}
+	return
+}
+
+func getKeysFromInbox(fileOwnerUsername string, accessToken uuid.UUID, fileSharerUsername string, privateEncryptionKey userlib.PKEDecKey) (K1 []byte, K2 []byte, K3 []byte, K4 []byte, fileOwner string, err error) {
+	//TODO: THINK ABOUT THIS AGAIN LATER, CONCEPT OF TWO INBOXES
+	var fileMessage FileMessage
+
+	if fileOwnerUsername == "" {
+		//only check first inbox
+		fileSharerSignatureVerificationKey, ok := userlib.KeystoreGet(fileSharerUsername + "Public Signature Key") 
+		if ok == false {
+			err = errors.New("Can't find public signature key of file sharer")
+			return
+		}
+
+		fileMessage, err = readInbox(accessToken, fileSharerSignatureVerificationKey, privateEncryptionKey)
+		if err != nil {
+			return 
+		}
+	} else {
+		secondInboxLocationBytes, _ := userlib.HashKDF([]byte(accessToken.String()), []byte("Second inbox"))
+		secondInboxLocation := bytesToUUID(secondInboxLocationBytes)
+		fileOwnerSignatureVerificationKey, ok := userlib.KeystoreGet(fileOwnerUsername + "Public Signature Key") 
+		if ok == false {
+			err = errors.New("Can't find public signature key of file owner")
+			return
+		}
+		fileSharerSignatureVerificationKey, ok := userlib.KeystoreGet(fileSharerUsername + "Public Signature Key") 
+		if ok == false {
+			err = errors.New("Can't find public signature key of file sharer")
+			return
+		}
+
+		fileMessage, err = readInbox(secondInboxLocation, fileOwnerSignatureVerificationKey, privateEncryptionKey)
+		if err != nil {
+			//check first inbox
+			fileMessage, err = readInbox(accessToken, fileSharerSignatureVerificationKey, privateEncryptionKey)
+			if err != nil {
+				//first inbox didn't work either
+				return 
+			}
+		}
+	}
+	
+	if fileMessage.Revoked == true {
+		err = errors.New("Your access has been revoked")
+		return
+	}
+	K1, K2, K3, K4 = fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4
+	fileOwner = fileMessage.FileOwner
+	return
+}
+
 // GetUser is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/getuser.html
 func GetUser(username string, password string) (userdataptr *User, err error) {
@@ -264,7 +354,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	return userdataptr, err
 }
 
-func (userdata *User) ReadAndVerifyFileMetadata(filename string) (K1 []byte, K2 []byte, K3 []byte, K4 []byte, encryptedMetadata []byte, metadataEncryptionKey []byte, metadataHmacKey []byte, err error) {
+func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename string, userdata *User) (K1 []byte, K2 []byte, K3 []byte, K4 []byte, metadataEncryptionKey []byte, metadataHmacKey []byte, err error) {
 	//read file  information struct from user struct, get k1, k2, k3, k4 for file
 	fileInformation, ok := userdata.FileMap[filename]
 	if ok == false {
@@ -279,6 +369,7 @@ func (userdata *User) ReadAndVerifyFileMetadata(filename string) (K1 []byte, K2 
 	metadataHmacKey = userlib.Argon2Key(K3, metadataSalt, 16)
 	fileMetadata, ok := userlib.DatastoreGet(bytesToUUID(K1))
 	fileMetadataOkay := true
+	var encryptedMetadata []byte
 	if ok == false {
 		fileMetadataOkay = false
 	} else {
@@ -300,44 +391,11 @@ func (userdata *User) ReadAndVerifyFileMetadata(filename string) (K1 []byte, K2 
 			err = errors.New("Your file has been messed with")
 			return
 		}
-		accessToken := fileInformation.AccessToken
-		message, ok := userlib.DatastoreGet(accessToken) 
-		if ok == false {
-			err = errors.New("Your inbox has been messed with")
+		K1, K2, K3, K4, _, err = getKeysFromInbox(fileInformation.FileOwnerUsername, fileInformation.AccessToken, fileInformation.FileSharerUsername, userdata.PrivateEncryptionKey)
+		if err != nil {
 			return
 		}
-		//check signature on marshalled message
-		encryptedSymmetricKey := message[:256]
-		encryptedMessage := message[256:len(message) - 256]
-		messageSignature := message[len(message) - 256:]
-		signatureVerificationKey, ok := userlib.KeystoreGet(fileInformation.FileOwnerUsername + "Public Signature Key") 
-		if ok == false {
-			err = errors.New("Can't find public signature key of file owner")
-			return
-		}
-		err = userlib.DSVerify(signatureVerificationKey, message[:len(message) - 256], messageSignature) 
-		if err != nil {
-			return 
-		}
-		var decryptedSymmetricKey []byte
-		decryptedSymmetricKey, err = userlib.PKEDec(userdata.PrivateEncryptionKey, encryptedSymmetricKey)
-		if err != nil {
-			return 
-		}
-		decryptedMessage := userlib.SymDec(decryptedSymmetricKey, encryptedMessage)
-
 		
-		var fileMessage FileMessage
-		err = json.Unmarshal(unpad(decryptedMessage, 16), &fileMessage)
-		if err != nil {
-			return
-		}
-		if fileMessage.Revoked == true {
-			err = errors.New("Your access has been revoked")
-			return
-		}
-		K1, K2, K3, K4 = fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4
-
 		//try reading file metadata again
 		fileMetadata, ok := userlib.DatastoreGet(bytesToUUID(K1))
 		if ok == false {
@@ -357,6 +415,20 @@ func (userdata *User) ReadAndVerifyFileMetadata(filename string) (K1 []byte, K2 
 			}
 		}
 	}
+
+	decrypt_metadata_padded := userlib.SymDec(metadataEncryptionKey, encryptedMetadata)
+	decrypt_metadata := unpad(decrypt_metadata_padded, 16)
+
+	if err = json.Unmarshal(decrypt_metadata, fileMetadataStruct);  err != nil {
+		return
+	}
+
+	//check  that user is in sharing  tree
+	if userSharingTree := findPersonSharingTree(fileMetadataStruct.FileSharingTreeRoot, userdata.Username); userSharingTree == nil {
+		err = errors.New("User not in sharing tree")
+		return
+	}
+
 	return
 }
 
@@ -393,34 +465,30 @@ func AddNewFilePiece(filePieceNum int, data []byte, k2 []byte, k3 []byte, k4 []b
 func (userdata *User) UpdateFile(filename string, data[]byte) (err error) {
 	userdata.FetchUserStruct(userdata.Username, userdata.Password)
 	//read the metadata and verify it, check inbox for new keys
-	var K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey []byte
-	K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey, err = userdata.ReadAndVerifyFileMetadata(filename) 
-	if err != nil {
-		return err
-	}
-	//decrypt file metadata, update with new file information, then reencrypt/mac metadata
-	decryptedMetadata := unpad(userlib.SymDec(metadataEncryptionKey, encryptedMetadata), 16)
+	var K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey []byte
 	var metadata FileMetadata
-	err = json.Unmarshal(decryptedMetadata, &metadata)
+
+	K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey, err = metadata.ReadAndVerifyFileMetadata(filename, userdata) 
 	if err != nil {
-		return err
+		return
 	}
+	
 	metadata.NumFilePieces = 1
 	reMarshalledMetadata, err := json.Marshal(&metadata)
 	if err != nil {
-		return err
+		return 
 	}
 	reencryptedMetadata := userlib.SymEnc(metadataEncryptionKey, userlib.RandomBytes(16), pad(reMarshalledMetadata, 16)) 
 	newMetadataHMAC, err := userlib.HMACEval(metadataHmacKey, reencryptedMetadata)
 	if err != nil {
-		return err
+		return 
 	}
 	//store updated metadata in datastore
 	userlib.DatastoreSet(bytesToUUID(K1), append(reencryptedMetadata, newMetadataHMAC...))
 
 	//create new piece of file and marshal/encrypt + mac it, store in datastore
 	if err = AddNewFilePiece(1, data, K2, K3, K4); err != nil {
-		return err
+		return 
 	}
 	return nil
 }
@@ -429,7 +497,7 @@ func (userdata *User) UpdateFile(filename string, data[]byte) (err error) {
 // https://cs161.org/assets/projects/2/docs/client_api/storefile.html
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
-	//TODO: UPDATE FOR WHEN FILE ALREADY EXISTS
+	//TODO: UPDATE FOR IF PERSON NOT IN SHARING TREE TRIES TO SHARE FILE 
 
 	err = userdata.FetchUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
@@ -489,6 +557,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	fileInformation.K3 = k3
 	fileInformation.K4 = k4
 	fileInformation.FileOwnerUsername = userdata.Username
+	fileInformation.FileSharerUsername = ""
 	fileInformation.AccessToken  = fileMetaData.FileSharingTreeRoot.AccessToken
 	userdata.FileMap[filename] = fileInformation
 	userdataBytes, err := json.Marshal(*userdata)
@@ -524,24 +593,18 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 // https://cs161.org/assets/projects/2/docs/client_api/appendfile.html
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	//get and verify user struct
-	err = userdata.FetchUserStruct(userdata.Username, userdata.Password)
-	if err != nil {
-		return err
+	if err = userdata.FetchUserStruct(userdata.Username, userdata.Password); err !=  nil {
+		return
 	}
 	
-	var K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey []byte
-	K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey, err = userdata.ReadAndVerifyFileMetadata(filename)
+	var K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey []byte
+	var metadata FileMetadata
+
+	K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey, err = metadata.ReadAndVerifyFileMetadata(filename, userdata) 
 	if err != nil {
-		return err
+		return
 	}
 
-	//decrypt file metadata, append new file piece information to it, then reencrypt/mac metadata
-	decryptedMetadata := unpad(userlib.SymDec(metadataEncryptionKey, encryptedMetadata), 16)
-	var metadata FileMetadata
-	err = json.Unmarshal(decryptedMetadata, &metadata)
-	if err != nil {
-		return err
-	}
 	metadata.NumFilePieces += 1
 	reMarshalledMetadata, err := json.Marshal(&metadata)
 	if err != nil {
@@ -571,20 +634,14 @@ func (userdata *User) LoadFile(filename string) (dataBytes []byte, err error) {
 		return 
 	}
 	//get the file metadata & check for integrity
-	var K2, K3, K4, encryptedMetadata, metadataEncryptionKey []byte
-	_, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, _, err = userdata.ReadAndVerifyFileMetadata(filename)
-	if err != nil {
-		return 
-	}
-	//decrypt the metadata
-	decrypt_metadata_padded := userlib.SymDec(metadataEncryptionKey, encryptedMetadata)
-	decrypt_metadata := unpad(decrypt_metadata_padded, 16)
+	var K2, K3, K4 []byte
 	var fileMetadata FileMetadata
 
-	if unmarshal_error := json.Unmarshal(decrypt_metadata, &fileMetadata);  unmarshal_error != nil {
-		err = unmarshal_error
-		return 
+	_, K2, K3, K4, _, _, err = fileMetadata.ReadAndVerifyFileMetadata(filename, userdata) 
+	if err != nil {
+		return
 	}
+	
 	//iterate over each piece of the file and do craziness to it
 	var data []byte
 
@@ -639,25 +696,18 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		return 
 	}
 	//get metadata using helper methods
-	var K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey []byte
-	K1, K2, K3, K4, encryptedMetadata, metadataEncryptionKey, metadataHmacKey, err = userdata.ReadAndVerifyFileMetadata(filename)
-	if err != nil {
-		return 
-	}
-	//decrypt the metadata and unmarshal metadata
-	decrypt_metadata_padded := userlib.SymDec(metadataEncryptionKey, encryptedMetadata)
-	decrypt_metadata := unpad(decrypt_metadata_padded, 16)
+	var K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey []byte
 	var fileMetadata FileMetadata
 
-	if unmarshal_error := json.Unmarshal(decrypt_metadata, &fileMetadata);  unmarshal_error != nil {
-		err = unmarshal_error
-		return 
+	K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey, err = fileMetadata.ReadAndVerifyFileMetadata(filename, userdata) 
+	if err != nil {
+		return
 	}
 
 	//update metadata with new recipient 
 	fileSharingTree := fileMetadata.FileSharingTreeRoot
 
-	senderSharingTree := findPersonSharingTree(fileSharingTree , userdata.Username)
+	senderSharingTree := findPersonSharingTree(fileSharingTree, userdata.Username)
 
 	var recipientSharingTree FileSharingTree
 	recipientSharingTree.Username = recipient
@@ -685,6 +735,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	fileMessage.Revoked = false
 	fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4 = K1, K2, K3, K4
+	fileMessage.FileOwner = fileMetadata.FileOwner
 
 
 	//encrypt and store file message
@@ -720,9 +771,27 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 // ReceiveFile is documented at:
 // https://cs161.org/assets/projects/2/docs/client_api/receivefile.html
-func (userdata *User) ReceiveFile(filename string, sender string,
-	accessToken uuid.UUID) error {
-	return nil
+func (userdata *User) ReceiveFile(filename string, sender string, accessToken uuid.UUID) (err error) {
+	//get the  user struct
+	if err = userdata.FetchUserStruct(userdata.Username, userdata.Password); err != nil {
+		return 
+	}
+	//check inbox at accessToken for file keys
+	var K1, K2, K3, K4 []byte  
+	var fileOwner string
+	K1, K2, K3, K4, fileOwner, err = getKeysFromInbox("", accessToken, sender, userdata.PrivateEncryptionKey) 
+
+	//add file keys/file owner/accessToken/filesharer to user struct
+	var fileInformation FileInformation
+	fileInformation.K1, fileInformation.K2, fileInformation.K3, fileInformation.K4 = K1, K2, K3, K4
+	fileInformation.FileOwnerUsername = fileOwner
+	fileInformation.AccessToken = accessToken
+	fileInformation.FileSharerUsername = sender
+	userdata.FileMap[filename] = fileInformation
+	if err =  StoreUpdatedUserStruct(userdata); err != nil {
+		return
+	}
+	return
 }
 
 // RevokeFile is documented at:
