@@ -379,12 +379,12 @@ func getNewKeysFromInbox(fileOwnerUsername string, accessToken uuid.UUID, privat
 // https://cs161.org/assets/projects/2/docs/client_api/getuser.html
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
-	userdataptr = &userdata
-	err = userdataptr.FetchUserStruct(username, password)	
+	err = userdata.FetchUserStruct(username, password)	
 	return
 }
 
 func (userdata *User) RemoveFileFromUserStruct(filename string) (err error) {
+	//TODO: HOW COME WE CAN USE USERDATA AS POINTER HERE?
 	err = userdata.FetchUserStruct(userdata.Username, userdata.Password)
 	if err != nil {
 		return 
@@ -487,7 +487,6 @@ func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename strin
 		err = errors.New("User not in sharing tree")
 		return
 	}
-
 	return
 }
 
@@ -879,9 +878,8 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		return
 	}
 	//load the file metadata
-	var originalFileMetadata * FileMetadata
+	var originalFileMetadata FileMetadata
 	originalFileMetadata.ReadAndVerifyFileMetadata(filename, userdata) 
-
 
 	//figure out who still has access and who doesn't
 	sharingTreePointer := originalFileMetadata.FileSharingTreeRoot
@@ -889,7 +887,6 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	if targetSharingTreePointer == nil {
 		return errors.New("File wasn't shared with revokee")
 	}
-
 	//update file metadata to remove users who no longer have access from sharing tree, store updated metadata
 	var remainingAccessUsers []FileSharingTree
 	findAllNonRevokedChildrenSharingTree(sharingTreePointer, &remainingAccessUsers, targetUsername) 
@@ -910,14 +907,14 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	//store file metadata with updated sharing tree
 	targetSharingTreePointer.Children = make([]*FileSharingTree, 0)
 	var K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey []byte
-	var newMetadata *FileMetadata
+	var newMetadata FileMetadata
 	K1, K2, K3, K4, metadataEncryptionKey, metadataHmacKey, err = newMetadata.ReadAndVerifyFileMetadata(filename, userdata) 
 	if err != nil {
 		return
 	}
 	
 	newMetadata.FileSharingTreeRoot = sharingTreePointer
-	reMarshalledMetadata, err := json.Marshal(newMetadata)
+	reMarshalledMetadata, err := json.Marshal(&newMetadata)
 	if err != nil {
 		return 
 	}
