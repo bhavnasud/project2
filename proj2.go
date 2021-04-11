@@ -251,6 +251,13 @@ func (userdata *User) SendMessageToInbox(fileMessage FileMessage, recipient stri
 
 // InitUser will be called a single time to initialize a new user.
 func InitUser(username string, password string) (userdataptr *User, err error) {
+
+	//check if username already exists
+	if _, ok := userlib.KeystoreGet(username + "Public Encryption Key"); ok == true {
+		err = errors.New("User with that username already exists")
+		return
+	}
+
 	var userdata User
 	userdataptr = &userdata
 
@@ -379,6 +386,7 @@ func getNewKeysFromInbox(fileOwnerUsername string, accessToken uuid.UUID, privat
 // https://cs161.org/assets/projects/2/docs/client_api/getuser.html
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
+	userdataptr = &userdata
 	err = userdata.FetchUserStruct(username, password)	
 	return
 }

@@ -37,11 +37,66 @@ func TestInit(t *testing.T) {
 		return
 	}
 	// t.Log() only produces output if you run with "go test -v"
-	t.Log("Got user", u)
+	// t.Log("Got user", u)
 	// If you want to comment the line above,
 	// write _ = u here to make the compiler happy
 	// You probably want many more tests here.
+
+	//call get user to make sure we get same information back
+	u_recieved, err2 := GetUser("alice", "fubar")
+	if err2 != nil  || !reflect.DeepEqual(u, u_recieved) {
+		t.Error("Error when getting user with correct password", err2)
+		return
+	}
+
+	//check that get user returns error with incorrect password
+	u_recieved, err2 = GetUser("alice", "fubar2") 
+	if err2 == nil {
+		t.Error("No error when incorrect password entered", err2)
+		return
+	}
+
+	u_recieved, err2 = GetUser("alice", "fubar") 
+	if err2 != nil {
+		t.Error("Error when correct password entered", err2)
+		return
+	}
+
+	//check that store file called with old filename overwrites old file and doesn't error
+	err3 := u_recieved.StoreFile("filename1", []byte("some random data"))
+	if err3 != nil {
+		t.Error("Error when storing file", err3)
+		return
+	}
+	fileData, err4 := u_recieved.LoadFile("filename1") 
+	if string(fileData) != "some random data" {
+		t.Error("Recieved file data does not match stored data", err4)
+		return
+	}
+	err5 := u_recieved.StoreFile("filename1", []byte("some new random data"))
+	if err5 != nil {
+		t.Error("Error when overwriting file data", err5)
+		return
+	}
+	fileDataNew, err6 := u_recieved.LoadFile("filename1") 
+	if string(fileDataNew) != "some new random data" {
+		t.Error("Did not recieve correctly ovewritten data", err6)
+		return
+	}
+
+	//test that you can't make two users with the same username but can make two users with the same password
+	_, err7 := InitUser("alice", "fubar2")
+	if err7 == nil {
+		t.Error("Made two users with the same username", err7)
+		return
+	}
+	_, err8 := InitUser("alice2", "fubar")
+	if err8 != nil {
+		t.Error("Failed at making two users with different usernames but same password", err8)
+		return
+	}
 }
+
 
 func TestStorage(t *testing.T) {
 	clear()
