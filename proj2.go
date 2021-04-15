@@ -142,7 +142,11 @@ func unpad(data []byte, blockSize int) (ret []byte) {
 }
 
 func checkIntegrity(data_all []byte, hmacKey []byte) (data []byte, err error) {
-		//verify mac of encrypted data
+	//verify mac of encrypted data
+	if len(data_all) < 64 {
+		err = errors.New("Data tampered with")
+		return 
+	}
 	data = data_all[:len(data_all) - 64]
 	hmac := data_all[len(data_all) - 64 :]
 
@@ -425,6 +429,10 @@ func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename strin
 	if ok == false {
 		fileMetadataOkay = false
 	} else {
+		if len(fileMetadata) < 64 {
+			err = errors.New("File metadata doesn't contain hmac")
+			return
+		} 
 		encryptedMetadata = fileMetadata[:len(fileMetadata) - 64]
 		storedMetadataHMAC := fileMetadata[len(fileMetadata) - 64:]
 		var fileMetadataHMAC []byte
