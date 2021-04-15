@@ -340,6 +340,10 @@ func readInbox(inboxLocation uuid.UUID, signatureVerificationKey userlib.DSVerif
 		return
 	}
 	//check signature on marshalled message
+	if len(message) < 512 {
+		err = errors.New("The inbox has been tampered with")
+		return
+	}
 	encryptedSymmetricKey := message[:256]
 	encryptedMessage := message[256:len(message) - 256]
 	messageSignature := message[len(message) - 256:]
@@ -474,6 +478,10 @@ func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename strin
 			userdata.RemoveFileFromUserStruct(filename)
 			return
 		} else {
+			if len(fileMetadata) < 64 {
+				err = errors.New("File metadata has been messed with")
+				return
+			}
 			encryptedMetadata = fileMetadata[:len(fileMetadata) - 64]
 			storedMetadataHMAC := fileMetadata[len(fileMetadata) - 64:]
 			var fileMetadataHMAC []byte
@@ -997,6 +1005,6 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		filePieceLocationKey := userlib.Argon2Key(fileInformation.K4, filePieceSalt, 16)
 		userlib.DatastoreDelete(bytesToUUID(filePieceLocationKey))
 	}
-	
+
 	return
 }

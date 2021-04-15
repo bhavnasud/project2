@@ -509,3 +509,50 @@ func TestRevokeBeforeRecieve(t *testing.T) {
 		t.Error("Bhavna can no longer access the file after bob revoked her 2", err)
 	}
 }
+
+func TestEmptyFilesAndFilenames(t *testing.T) {
+	clear()
+	alice, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+	_, err2 := InitUser("bob", "foobar")
+	if err2 != nil {
+		t.Error("Failed to initialize bob", err2)
+		return
+	}
+
+	
+	var v []byte
+	alice.StoreFile("", v)
+
+	_, err = alice.ShareFile("", "bob")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = alice.RevokeFile("", "bob")
+	if err != nil {
+		t.Error("Unable to revoke empty file", err)
+		return
+	}
+
+	// Bhavna can still access the file
+	var fileData []byte
+	fileData, err = alice.LoadFile("")
+	if err != nil {
+		t.Error("Alice can't read file", err)
+		return
+	}
+	if len(fileData) != 0 {
+		t.Error("Did not read empty file")
+		return
+	}
+
+}
+
+
+
+
