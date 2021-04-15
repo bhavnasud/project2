@@ -705,4 +705,33 @@ func TestUserIntegrityCheck(t *testing.T) {
 	
 }
 
+func TestMultipleUserSessions(t *testing.T) {
+	clear()
+	InitUser("alice", "fubar")
+	alice1, err := GetUser("alice", "fubar")
+	if err != nil {
+		t.Error("Unable to get user")
+		return
+	}
+
+	alice2, err2 := GetUser("alice", "fubar")
+	if err2 != nil {
+		t.Error("Unable to get user again")
+		return
+	}
+
+	v := []byte("This is a test")
+	alice1.StoreFile("file1", v)
+	fileData, err3 := alice1.LoadFile("file1")
+	if err3 != nil || !reflect.DeepEqual(fileData, v) {
+		t.Error("Alice couldn't access file", err)
+		return
+	} 
+	fileData, err3 = alice2.LoadFile("file1")
+	if err3 != nil || !reflect.DeepEqual(fileData, v) {
+		t.Error("Alice could access file", err)
+		return
+	}  
+	
+}
 
