@@ -899,6 +899,38 @@ func TestRecieveAgainAfterRevoke(t *testing.T) {
 	}
 }
 
+func TestRecieveAfterParentRevoke(t *testing.T) {
+	clear()
+	alice, _ := InitUser("alice", "fubar")
+	bob, _ := InitUser("bob", "fubar")
+	Bhavna, _ := InitUser("Bhavna", "fubar")
+	v := []byte("Initial data")
+	alice.StoreFile("file1", v)
+
+	//aliec shares with bob, bob shares with bhavna, then alice revokes bob, then bhavna recieves
+	accessToken, err := alice.ShareFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+	_ = bob.ReceiveFile("file1", "alice", accessToken)
+	accessToken, err = bob.ShareFile("file1", "Bhavna")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+	err = alice.RevokeFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to revoke the file", err)
+		return
+	}
+	err = Bhavna.ReceiveFile("file1", "Bhavna", accessToken)
+	if err == nil {
+		t.Error("Bhavna able to recieve file despite it being revoked from parent", err)
+		return
+	}
+}
+
 func TestSomeoneElseRecievingFile(t *testing.T) {
 	clear()
 	alice, _ := InitUser("alice", "fubar")
