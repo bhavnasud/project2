@@ -586,15 +586,38 @@ func TestFileIntegrityCheck(t *testing.T) {
 	newDataStore := userlib.DatastoreGetMap()
 	newkeys := findMapDifference(originalDataStore, newDataStore)
 	
-	// Bad EvanBot is making changes, oh no O_O
-	newDataStore[newkeys[0]] = []byte("EvanBot is the biggest threat")
+	if len(newkeys) > 0 {
+		newDataStore[newkeys[0]] = []byte("EvanBot is the biggest threat")
+		
+		_, err = alice.LoadFile("file1")
+		if err == nil {
+			t.Error("Successfully loaded file with no integrity")
+			return
+		} 
+	}
 	
-	_, err = alice.LoadFile("file1")
-	if err == nil {
-		t.Error("Successfully loaded file with no integrity")
-		return
-	} 
 }
 
+
+func TestUserIntegrityCheck(t *testing.T) {
+	clear()
+
+	originalDataStore := copyMap(userlib.DatastoreGetMap())
+	InitUser("alice", "fubar")
+	newDataStore := userlib.DatastoreGetMap()
+	newkeys := findMapDifference(originalDataStore, newDataStore)
+	
+	if len(newkeys) > 0 {
+		newDataStore[newkeys[0]] = []byte("malicious user struct data")
+		
+		_, err := GetUser("alice", "fubar")
+
+		if err == nil {
+			t.Error("Did not do integrity check for user struct")
+			return
+		} 
+	}
+	
+}
 
 
