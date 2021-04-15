@@ -553,6 +553,48 @@ func TestEmptyFilesAndFilenames(t *testing.T) {
 
 }
 
+func copyMap(original map[uuid.UUID][]byte) (copy map[uuid.UUID][]byte) {
+	copy = make(map[uuid.UUID][]byte)
+	for k,v := range original {
+	  copy[k] = v
+	}
+	return
+}
+
+func findMapDifference(original map[uuid.UUID][]byte, newmap map[uuid.UUID][]byte) (newkeys []uuid.UUID){
+	for k,_ := range newmap {
+		_, ok := original[k]
+		if ok == false {
+			newkeys = append(newkeys, k)
+		}
+	}
+	return
+}
+
+func TestFileIntegrityCheck(t *testing.T) {
+	clear()
+	alice, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+
+
+	originalDataStore := copyMap(userlib.DatastoreGetMap())
+	v := []byte("This is a test")
+	alice.StoreFile("file1", v)
+	newDataStore := userlib.DatastoreGetMap()
+	newkeys := findMapDifference(originalDataStore, newDataStore)
+	
+	// Bad EvanBot is making changes, oh no O_O
+	newDataStore[newkeys[0]] = []byte("EvanBot is the biggest threat")
+	
+	_, err = alice.LoadFile("file1")
+	if err == nil {
+		t.Error("Successfully loaded file with no integrity")
+		return
+	} 
+}
 
 
 
