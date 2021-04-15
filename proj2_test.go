@@ -732,6 +732,18 @@ func TestMultipleUserSessions(t *testing.T) {
 		t.Error("Alice could access file", err)
 		return
 	}  
+	alice2.StoreFile("file1", v)
+	alice2.AppendFile("file1", v)
+	fileData, err3 = alice1.LoadFile("file1")
+	if err3 != nil || !reflect.DeepEqual(fileData, append(v, v...)) {
+		t.Error("Alice couldn't access file", err)
+		return
+	} 
+	fileData, err3 = alice2.LoadFile("file1")
+	if err3 != nil || !reflect.DeepEqual(fileData, append(v, v...)) {
+		t.Error("Alice could access file", err)
+		return
+	}  
 	
 }
 
@@ -767,7 +779,6 @@ func TestAppendFileRuntime(t *testing.T) {
 			return
 		}
 	}
-	
-
 }
+
 
