@@ -646,21 +646,27 @@ func TestRevokeTree(t *testing.T) {
 	bob, _ := InitUser("bob", "fubar")
 	bhavna, _ := InitUser("bhavna", "fubar")
 	abdallah, _ := InitUser("abdallah", "fubar")
+	fred, _ := InitUser("fred", "fubar")
+	test, _ := InitUser("test", "fubar")
 	v := []byte("This is a test")
 	alice.StoreFile("file1", v)
 
-	//alice shares with bob, bob shares with bhavna
-	//alice shares with abdallah
+	//alice shares with bob, bob shares with bhavna, bob shares with fred
+	//alice shares with abdallah, abdallah shares with test
 	accessToken, err := alice.ShareFile("file1", "bob")
 	bob.ReceiveFile("file1", "alice", accessToken) 
 	accessToken, err = bob.ShareFile("file1", "bhavna")
 	bhavna.ReceiveFile("file1", "bob", accessToken) 
+	accessToken, err = bob.ShareFile("file1", "fred")
+	fred.ReceiveFile("file1", "bob", accessToken) 
 	accessToken, err = alice.ShareFile("file1", "abdallah")
 	abdallah.ReceiveFile("file1", "alice", accessToken) 
+	accessToken, err = abdallah.ShareFile("file1", "test")
+	test.ReceiveFile("file1", "abdallah", accessToken) 
 
 	alice.RevokeFile("file1", "bob")
 	var fileData []byte
-	//test that bob and bhavna can't access file, but alice and abdallah still can
+	//test that bob and bhavna and fred can't access file, but alice and abdallah and test still can
 	fileData, err = alice.LoadFile("file1")
 	if err != nil || !reflect.DeepEqual(fileData, v) {
 		t.Error("Alice couldn't access file", err)
@@ -671,6 +677,12 @@ func TestRevokeTree(t *testing.T) {
 		t.Error("Abdallah couldn't access file", err)
 		return
 	} 
+	fileData, err = test.LoadFile("file1")
+	if err != nil || !reflect.DeepEqual(fileData, v) {
+		t.Error("Test couldn't access file", err)
+		return
+	} 
+
 	fileData, err = bob.LoadFile("file1")
 	if err == nil {
 		t.Error("Bob could access file", err)
@@ -681,8 +693,12 @@ func TestRevokeTree(t *testing.T) {
 		t.Error("Bhavna could access file", err)
 		return
 	}  
+	fileData, err = fred.LoadFile("file1")
+	if err == nil {
+		t.Error("Fred could access file", err)
+		return
+	}  
 }
-
 
 func TestUserIntegrityCheck(t *testing.T) {
 	clear()
@@ -826,6 +842,63 @@ func TestAppendFileRuntime(t *testing.T) {
 	}
 }
 
+func TestRecieveAgainAfterRevoke(t *testing.T) {
+	clear()
+	alice, _ := InitUser("alice", "fubar")
+	bob, _ := InitUser("bob", "fubar")
+	Bhavna, _ := InitUser("Bhavna", "fubar")
+	v := []byte("Initial data")
+	alice.StoreFile("file1", v)
+
+	accessToken, err := alice.ShareFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+	accessToken, err = alice.ShareFile("file1", "Bhavna")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+	_ = Bhavna.ReceiveFile("file1", "Bhavna", accessToken)
+	
+	//test what happens when recieve file called with person who didn't share file
+	err = bob.ReceiveFile("file1", "Bhavna", accessToken)
+	if err == nil {
+		t.Error("Bob recieved file from wrong sender", err)
+		return
+	}
+
+	//alice revokes before bob recieves
+	err = alice.RevokeFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to revoke the file", err)
+		return
+	}
+
+	err = bob.ReceiveFile("file1", "alice", accessToken)
+	if err == nil {
+		t.Error("Bob recieved file despite it being revoked", err)
+		return
+	}
+	//alice shares again, bob should correctly recieve
+	accessToken, err = alice.ShareFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+	err = bob.ReceiveFile("file1", "alice", accessToken)
+	if err != nil {
+		t.Error("Bob unable to recieve file", err)
+		return
+	}
+	fileData, err2 := bob.LoadFile("file1")
+	if err2 != nil || !reflect.DeepEqual(fileData, v) {
+		t.Error("Bob couldn't load file", err2)
+		return
+	}
+}
+
 func TestSomeoneElseRecievingFile(t *testing.T) {
 	clear()
 	alice, _ := InitUser("alice", "fubar")
@@ -859,4 +932,6 @@ func TestSomeoneElseRecievingFile(t *testing.T) {
 	}  
 
 }
+
+
 
