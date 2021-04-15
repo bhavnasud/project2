@@ -826,4 +826,37 @@ func TestAppendFileRuntime(t *testing.T) {
 	}
 }
 
+func TestSomeoneElseRecievingFile(t *testing.T) {
+	clear()
+	alice, _ := InitUser("alice", "fubar")
+	bob, _ := InitUser("bob", "fubar")
+	Bhavna, _ := InitUser("Bhavna", "fubar")
+
+	v := []byte("Initial data")
+	alice.StoreFile("file1", v)
+
+	accessToken, err := alice.ShareFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to share the a file", err)
+		return
+	}
+
+	err = Bhavna.ReceiveFile("file1", "alice", accessToken)
+	if err == nil {
+		t.Error("Bhavna was able to recieve file for Bob", err)
+		return
+	}
+	err = bob.ReceiveFile("file1", "alice", accessToken)
+	if err != nil {
+		t.Error("Bob wasn't able to recieve file after Bob tried to recieve it", err)
+		return
+	}
+	var fileData []byte
+	fileData, err = bob.LoadFile("file1")
+	if err != nil || !reflect.DeepEqual(fileData, v) {
+		t.Error("Bob did not load file correctly", err)
+		return
+	}  
+
+}
 

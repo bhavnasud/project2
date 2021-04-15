@@ -123,6 +123,7 @@ type FileMessage struct {
 	Revoked bool
 	K1, K2, K3, K4 []byte
 	FileOwner string
+	Recipient string
 }
 
 // Helper function: Pads array of bytes
@@ -368,7 +369,7 @@ func readInbox(inboxLocation uuid.UUID, signatureVerificationKey userlib.DSVerif
 	return
 }
 
-func getNewKeysFromInbox(fileOwnerUsername string, accessToken uuid.UUID, privateEncryptionKey userlib.PKEDecKey) (fileMessage FileMessage, err error) {
+func getNewKeysFromInbox(fileOwnerUsername string, accessToken uuid.UUID, privateEncryptionKey userlib.PKEDecKey, recipient string) (fileMessage FileMessage, err error) {
 	//TODO: THINK ABOUT THIS AGAIN LATER, CONCEPT OF TWO INBOXES
 
 	secondInboxLocationBytes, _ := userlib.HashKDF(UUIDToBytes(accessToken), []byte("Second inbox"))
@@ -382,6 +383,11 @@ func getNewKeysFromInbox(fileOwnerUsername string, accessToken uuid.UUID, privat
 	fileMessage, err = readInbox(secondInboxLocation, fileOwnerSignatureVerificationKey, privateEncryptionKey)
 
 	if err != nil {
+		return
+	}
+
+	if fileMessage.Recipient != recipient {
+		err = errors.New("You are not the recipient")
 		return
 	}
 	
@@ -460,7 +466,7 @@ func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename strin
 			return
 		}
 		var fileMessage FileMessage
-		fileMessage, err = getNewKeysFromInbox(fileInformation.FileOwnerUsername, fileInformation.AccessToken, userdata.PrivateEncryptionKey)
+		fileMessage, err = getNewKeysFromInbox(fileInformation.FileOwnerUsername, fileInformation.AccessToken, userdata.PrivateEncryptionKey, userdata.Username)
 		if err != nil {
 			userdata.RemoveFileFromUserStruct(filename)
 			return
@@ -837,6 +843,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 	fileMessage.Revoked = false
 	fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4 = K1, K2, K3, K4
 	fileMessage.FileOwner = fileMetadata.FileOwner
+	fileMessage.Recipient = recipient
 
 
 	//encrypt and store file message
@@ -888,7 +895,7 @@ func (userdata *User) ReceiveFile(filename string, sender string, accessToken uu
 			return errors.New("Your second inbox has been messed with and there was a message there we can't read")
 		}
 		//otherwise it's an error we're okay with (no messages in second inbox)
-	} else {
+	} else if secondFileMessage.Recipient == userdata.Username  {
 		//otherwise, check if user revoked
 		if secondFileMessage.Revoked == true {
 			return errors.New("Your access has been revoked")
@@ -896,6 +903,9 @@ func (userdata *User) ReceiveFile(filename string, sender string, accessToken uu
 		fileMessage = secondFileMessage
 	}
 
+	if fileMessage.Recipient != userdata.Username {
+		return errors.New("The message was not for you")
+	}
 	//add file keys/file owner/accessToken/filesharer to user struct
 	var fileInformation FileInformation
 	fileInformation.K1, fileInformation.K2, fileInformation.K3, fileInformation.K4 = fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4
@@ -980,7 +990,7 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	stillAccessMessage.Revoked = false
 	stillAccessMessage.FileOwner = fileInformation.FileOwnerUsername
 	stillAccessMessage.K1, stillAccessMessage.K2, stillAccessMessage.K3, stillAccessMessage.K4 = K1, K2, K3, K4
-	
+
 	var noAccessMessage FileMessage
 	noAccessMessage.Revoked = true
 	noAccessMessage.FileOwner = fileInformation.FileOwnerUsername
@@ -989,7 +999,7 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		remainingAccessUser := remainingAccessUsers[i]
 		secondInboxLocationBytes, _ := userlib.HashKDF(UUIDToBytes(remainingAccessUser.AccessToken), []byte("Second inbox"))
 		secondInboxLocation := bytesToUUID(secondInboxLocationBytes)
-
+		stillAccessMessage.Recipient = remainingAccessUsers[i].Username
 		err = userdata.SendMessageToInbox(stillAccessMessage, remainingAccessUser.Username, secondInboxLocation) 
 		if err != nil {
 			return
@@ -1000,6 +1010,7 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		removedAccessUser := removedAccessUsers[i]
 		secondInboxLocationBytes, _ := userlib.HashKDF(UUIDToBytes(removedAccessUser.AccessToken), []byte("Second inbox"))
 		secondInboxLocation := bytesToUUID(secondInboxLocationBytes)
+		noAccessMessage.Recipient = removedAccessUsers[i].Username
 		err = userdata.SendMessageToInbox(noAccessMessage, removedAccessUser.Username, secondInboxLocation) 
 		if err != nil {
 			return
