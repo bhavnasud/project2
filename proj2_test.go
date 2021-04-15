@@ -705,6 +705,26 @@ func TestUserIntegrityCheck(t *testing.T) {
 	
 }
 
+func TestUserMaliciousActionCheck(t *testing.T) {
+	clear()
+
+	originalDataStore := copyMap(userlib.DatastoreGetMap())
+	InitUser("alice", "fubar")
+	newDataStore := userlib.DatastoreGetMap()
+	newkeys := findMapDifference(originalDataStore, newDataStore)
+	
+	if len(newkeys) > 0 {
+		delete(newDataStore, newkeys[0])
+	
+		_, err := GetUser("alice", "fubar")
+
+		if err == nil {
+			t.Error("Did not fail when user struct deleted")
+			return
+		} 
+	}
+	
+}
 func TestMultipleUserSessions(t *testing.T) {
 	clear()
 	InitUser("alice", "fubar")
@@ -745,6 +765,31 @@ func TestMultipleUserSessions(t *testing.T) {
 		return
 	}  
 	
+}
+
+func TestSwappingFilePieces(t *testing.T) {
+	clear()
+	alice, _ := InitUser("alice", "fubar")
+
+	originalDataStore := copyMap(userlib.DatastoreGetMap())
+	v := []byte("Initial data")
+	alice.StoreFile("file1", v)
+	alice.AppendFile("file1", v)
+	newDataStore := userlib.DatastoreGetMap()
+	newkeys := findMapDifference(originalDataStore, newDataStore)
+	
+	if len(newkeys) >= 2 {
+		firstKeyData := newDataStore[newkeys[0]]
+		newDataStore[newkeys[0]] = newDataStore[newkeys[1]]
+		newDataStore[newkeys[1]] = firstKeyData
+
+		_, err := alice.LoadFile("file1")
+		if err == nil {
+			t.Error("Alice could not detect that file pieces were swapped", err)
+			return
+		}  
+	}
+
 }
 
 func TestAppendFileRuntime(t *testing.T) {

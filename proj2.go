@@ -563,6 +563,16 @@ func (userdata *User) UpdateFile(filename string, data[]byte) (err error) {
 		return
 	}
 	
+	//delete old file pieces
+	for i := 1; i < metadata.NumFilePieces + 1; i++ {
+		//encryption key, mackey, location key
+		filePieceSalt := make([]byte, 1)
+		filePieceSalt[0] = byte(i + 1)
+		filePieceLocationKey := userlib.Argon2Key(K4, filePieceSalt, 16)
+		userlib.DatastoreDelete(bytesToUUID(filePieceLocationKey))
+	}
+
+	//update metadata
 	metadata.NumFilePieces = 1
 	reMarshalledMetadata, err := json.Marshal(&metadata)
 	if err != nil {
