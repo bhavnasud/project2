@@ -735,3 +735,39 @@ func TestMultipleUserSessions(t *testing.T) {
 	
 }
 
+func TestAppendFileRuntime(t *testing.T) {
+	clear()
+	alice, _ := InitUser("alice", "fubar")
+	v := []byte("Initial data")
+	alice.StoreFile("file1", v)
+
+	userlib.DatastoreResetBandwidth()
+
+	err := alice.AppendFile("file1", v) 
+	if err != nil {
+		t.Error("Unable to append to file", err)
+		return
+	}
+
+	originalBandwidthUsed := userlib.DatastoreGetBandwidth()
+
+	for i := 0; i < 100; i++ {
+		// Reset bandwidth counter
+		userlib.DatastoreResetBandwidth()
+
+		err := alice.AppendFile("file1", v) 
+		if err != nil {
+			t.Error("Unable to append to file", err)
+			return
+		}
+
+		bandwidthUsed := userlib.DatastoreGetBandwidth()
+		if float32(bandwidthUsed) > float32(1.05) * float32(originalBandwidthUsed) {
+			t.Error("Time to append increased", err)
+			return
+		}
+	}
+	
+
+}
+
