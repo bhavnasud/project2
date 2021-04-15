@@ -357,6 +357,7 @@ func readInbox(inboxLocation uuid.UUID, signatureVerificationKey userlib.DSVerif
 	decryptedMessage := userlib.SymDec(decryptedSymmetricKey, encryptedMessage)
 
 	err = json.Unmarshal(unpad(decryptedMessage, 16), &fileMessage)
+
 	if err != nil {
 		return
 	}
@@ -375,6 +376,7 @@ func getNewKeysFromInbox(fileOwnerUsername string, accessToken uuid.UUID, privat
 	}
 
 	fileMessage, err = readInbox(secondInboxLocation, fileOwnerSignatureVerificationKey, privateEncryptionKey)
+
 	if err != nil {
 		return
 	}
@@ -418,6 +420,7 @@ func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename strin
 		return
 	}
 	K1, K2, K3, K4 = fileInformation.K1, fileInformation.K2, fileInformation.K3, fileInformation.K4
+
 	//read file metadata from datastore and check its integrity
 	metadataSalt := make([]byte, 1)
 	metadataSalt[0] = byte(1)
@@ -447,6 +450,7 @@ func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename strin
 	//if reading file metadata fails (either key doesn't exist or mac doesn't validate, check accessToken in datastore for new keys)
 	if fileMetadataOkay == false {
 		//check for message at accessToken for new keys, unless you are file owner
+		//TODO: THINK ABOUT THIS CASE MORE, BUT FILE OWNER WILL STILL GET MESSAGE WITH NEW KEYS
 		if fileInformation.FileOwnerUsername == userdata.Username {
 			err = errors.New("Your file has been messed with")
 			return
@@ -458,6 +462,10 @@ func (fileMetadataStruct *FileMetadata) ReadAndVerifyFileMetadata(filename strin
 			return
 		}
 		K1, K2, K3, K4 = fileMessage.K1, fileMessage.K2, fileMessage.K3, fileMessage.K4
+		metadataSalt := make([]byte, 1)
+		metadataSalt[0] = byte(1)
+		metadataEncryptionKey = userlib.Argon2Key(K2, metadataSalt, 16)
+		metadataHmacKey = userlib.Argon2Key(K3, metadataSalt, 16)
 		
 		//try reading file metadata again
 		fileMetadata, ok := userlib.DatastoreGet(bytesToUUID(K1))
@@ -897,6 +905,13 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	var originalFileMetadata FileMetadata
 	originalFileMetadata.ReadAndVerifyFileMetadata(filename, userdata) 
 
+	//remove old file pieces/metadata from datastore
+	fileInformation, ok := userdata.FileMap[filename]
+	if ok == false {
+		err = errors.New("File name doesn't exist")
+		return
+	}
+
 	//figure out who still has access and who doesn't
 	sharingTreePointer := originalFileMetadata.FileSharingTreeRoot
 	targetSharingTreePointer := findPersonSharingTree(sharingTreePointer, targetUsername) 
@@ -945,15 +960,18 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	//send messages to users who still have access and to users who no longer have access
 	var stillAccessMessage FileMessage
 	stillAccessMessage.Revoked = false
+	stillAccessMessage.FileOwner = fileInformation.FileOwnerUsername
 	stillAccessMessage.K1, stillAccessMessage.K2, stillAccessMessage.K3, stillAccessMessage.K4 = K1, K2, K3, K4
 	
 	var noAccessMessage FileMessage
 	noAccessMessage.Revoked = true
+	noAccessMessage.FileOwner = fileInformation.FileOwnerUsername
 
 	for i := 0; i < len(remainingAccessUsers); i++ {
 		remainingAccessUser := remainingAccessUsers[i]
 		secondInboxLocationBytes, _ := userlib.HashKDF(UUIDToBytes(remainingAccessUser.AccessToken), []byte("Second inbox"))
 		secondInboxLocation := bytesToUUID(secondInboxLocationBytes)
+
 		err = userdata.SendMessageToInbox(stillAccessMessage, remainingAccessUser.Username, secondInboxLocation) 
 		if err != nil {
 			return
@@ -970,5 +988,15 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		}
 	}
 
+	userlib.DatastoreDelete(bytesToUUID(fileInformation.K1))
+
+	for i := 1; i < originalFileMetadata.NumFilePieces + 1; i++ {
+		//encryption key, mackey, location key
+		filePieceSalt := make([]byte, 1)
+		filePieceSalt[0] = byte(i + 1)
+		filePieceLocationKey := userlib.Argon2Key(fileInformation.K4, filePieceSalt, 16)
+		userlib.DatastoreDelete(bytesToUUID(filePieceLocationKey))
+	}
+	
 	return
 }

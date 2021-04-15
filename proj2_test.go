@@ -294,6 +294,114 @@ func TestShare(t *testing.T) {
 	}
 }
 
+func TestRevokeScenario(t *testing.T) {
+	clear()
+	u, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+	
+	u2, err2 := InitUser("bob", "foobar")
+	if err2 != nil {
+		t.Error("Failed to initialize bob", err2)
+		return
+	}
+
+	u3, err3 := InitUser("Bhavna", "fubar2")
+	if err3 != nil {
+		t.Error("Failed to initialize user", err3)
+		return
+	}
+
+	//storing file
+	v := []byte("This is a test")
+	u.StoreFile("file1", v)
+
+
+    //Sharing file for first user
+    accessTokenBob, err4 := u.ShareFile("file1", "bob")
+	if err4 != nil {
+		t.Error("could not share file", err4)
+		return
+	}
+
+	//recieving file for first user
+	err4 = u2.ReceiveFile("BobFile", "alice", accessTokenBob)
+	if err4 != nil {
+		t.Error("Unable to recieve file", err4)
+		return
+	}
+
+
+	//sharing file for second user
+    accessTokenBhavna, err5 := u.ShareFile("file1", "Bhavna")
+	if err5 != nil {
+		t.Error("could not share file", err5)
+		return
+	}
+
+	//recieving file for second user
+	err5 = u3.ReceiveFile("BhavnaFile", "alice", accessTokenBhavna)
+	if err5 != nil {
+		t.Error("Unable to recieve file", err5)
+		return
+	}
+
+	//revoke file from bob
+	err = u.RevokeFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to revoke the file", err)
+		return
+	}
+
+	_, err = u2.LoadFile("BobFile")
+	if err == nil {
+		t.Error("Bob loaded file after access revoked", err)
+		return
+	}
+
+
+	v2 := []byte("revokee is appending")
+	v3 := []byte("revoker is appending")
+
+
+	//bob tries to append after access revoked
+	err6 := u2.AppendFile("BobFile", v2)
+	if err6 == nil {
+		t.Error("Bob was able to append after access revoked", err6)
+		return
+	}
+
+	err = u.AppendFile("file1", v3)
+	if err != nil {
+		t.Error("File owner unable to append after revoking", err)
+		return
+	}
+
+	var  fileData []byte
+	fileData, err = u.LoadFile("file1")
+	if err != nil {
+		t.Error("File owner unable to load file after revoking", err)
+		return
+	}
+
+	if !reflect.DeepEqual(append(v, v3...), fileData) {
+		t.Error("File not same after revoking", append(v, v3...), fileData)
+		return
+	}
+
+	//bhavna tries to load file
+	_, err7 := u3.LoadFile("BhavnaFile")
+	if err7 != nil {
+		t.Error("Failed to download the file after sharing", err7)
+		return
+	}
+	if !reflect.DeepEqual(append(v, v3...), fileData) {
+		t.Error("Shared file is not the same", append(v, v3...), fileData)
+		return
+	}
+}
 
 func TestRevokeBeforeRecieve(t *testing.T) {
 	clear()
@@ -314,6 +422,12 @@ func TestRevokeBeforeRecieve(t *testing.T) {
 		return
 	}
 
+	_, err4 := InitUser("Test", "fubar2")
+	if err4 != nil {
+		t.Error("Failed to initialize Test", err4)
+		return
+	}
+
 	v := []byte("This is a test")
 	alice.StoreFile("file1", v)
 
@@ -321,7 +435,7 @@ func TestRevokeBeforeRecieve(t *testing.T) {
 
 	accessToken, err = alice.ShareFile("file1", "bob")
 	if err != nil {
-		t.Error("Failed to share the a file", err)
+		t.Error("Failed to share the file", err)
 		return
 	}
 
@@ -334,13 +448,20 @@ func TestRevokeBeforeRecieve(t *testing.T) {
 	//share file with Bhavna
 	accessToken, err = alice.ShareFile("file1", "Bhavna")
 	if err != nil {
-		t.Error("Failed to share the a file", err)
+		t.Error("Failed to share the file", err)
 		return
 	}
 
 	err = Bhavna.ReceiveFile("file1", "alice", accessToken)
 	if err != nil {
-		t.Error("Able to  recieve file despite being revoked")
+		t.Error("Unable to recieve file")
+		return
+	}
+
+	//Bhavna share file with test
+	_, err = Bhavna.ShareFile("file1", "Test")
+	if err != nil {
+		t.Error("Bhavna failed to share the file", err)
 		return
 	}
 	
@@ -348,13 +469,13 @@ func TestRevokeBeforeRecieve(t *testing.T) {
 	// Bhavna can still access the file
 	_, err = Bhavna.LoadFile("file1")
 	if err != nil {
-		t.Error("Bhavna can no longer access the file after bob revoked her", err)
+		t.Error("Bhavna can't read file", err)
 	}
 
 	// Alice still has access
 	_, err = alice.LoadFile("file1")
 	if err != nil {
-		t.Error("bob was able to kick alice while he was not the creator of the file", err)
+		t.Error("alice doesn't have access anymore", err)
 	}
 
 	err = alice.RevokeFile("file1", "bob")
