@@ -594,8 +594,93 @@ func TestFileIntegrityCheck(t *testing.T) {
 			t.Error("Successfully loaded file with no integrity")
 			return
 		} 
+		_, err = alice.LoadFile("file1")
+		if err == nil {
+			t.Error("Successfully loaded file with no integrity")
+			return
+		} 
 	}
 	
+}
+
+func TestMaliciousRecieveFile(t *testing.T) {
+	clear()
+	alice, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+	bob, err2 := InitUser("bob", "fubar")
+	if err2 != nil {
+		t.Error("Failed to initialize user", err2)
+		return
+	}
+
+	v := []byte("This is a test")
+	alice.StoreFile("file1", v)
+
+	originalDataStore := copyMap(userlib.DatastoreGetMap())
+	accessToken, err3 := alice.ShareFile("file1", "bob")
+	if err3 != nil {
+		t.Error("Failed to share the file", err3)
+		return
+	}
+	newDataStore := userlib.DatastoreGetMap()
+	newkeys := findMapDifference(originalDataStore, newDataStore)
+	
+	if len(newkeys) > 0 {
+		newDataStore[newkeys[0]] = []byte("EvanBot is the biggest threat")
+		
+		err = bob.ReceiveFile("file2", "alice", accessToken) 
+		if err == nil {
+			t.Error("Did not do recieve file integrity check", err)
+			return
+		}
+
+	}
+}
+
+func TestRevokeTree(t *testing.T) {
+	clear()
+	alice, _ := InitUser("alice", "fubar")
+	bob, _ := InitUser("bob", "fubar")
+	bhavna, _ := InitUser("bhavna", "fubar")
+	abdallah, _ := InitUser("abdallah", "fubar")
+	v := []byte("This is a test")
+	alice.StoreFile("file1", v)
+
+	//alice shares with bob, bob shares with bhavna
+	//alice shares with abdallah
+	accessToken, err := alice.ShareFile("file1", "bob")
+	bob.ReceiveFile("file1", "alice", accessToken) 
+	accessToken, err = bob.ShareFile("file1", "bhavna")
+	bhavna.ReceiveFile("file1", "bob", accessToken) 
+	accessToken, err = alice.ShareFile("file1", "abdallah")
+	abdallah.ReceiveFile("file1", "alice", accessToken) 
+
+	alice.RevokeFile("file1", "bob")
+	var fileData []byte
+	//test that bob and bhavna can't access file, but alice and abdallah still can
+	fileData, err = alice.LoadFile("file1")
+	if err != nil || !reflect.DeepEqual(fileData, v) {
+		t.Error("Alice couldn't access file", err)
+		return
+	}
+	fileData, err = abdallah.LoadFile("file1")
+	if err != nil || !reflect.DeepEqual(fileData, v) {
+		t.Error("Abdallah couldn't access file", err)
+		return
+	} 
+	fileData, err = bob.LoadFile("file1")
+	if err == nil {
+		t.Error("Bob could access file", err)
+		return
+	}  
+	fileData, err = bhavna.LoadFile("file1")
+	if err == nil {
+		t.Error("Bhavna could access file", err)
+		return
+	}  
 }
 
 
