@@ -62,6 +62,12 @@ func TestInit(t *testing.T) {
 		return
 	}
 
+	_, err2 = GetUser("Bhavna", "fubar") 
+	if err2 == nil {
+		t.Error("Bhavna does not exist", err2)
+		return
+	}
+
 	//check that store file called with old filename overwrites old file and doesn't error
 	err3 := u_recieved.StoreFile("filename1", []byte("some random data"))
 	if err3 != nil {
@@ -73,6 +79,13 @@ func TestInit(t *testing.T) {
 		t.Error("Recieved file data does not match stored data", err4)
 		return
 	}
+
+	fileData, err4 = u_recieved.LoadFile("filename5") 
+	if err4 == nil{
+		t.Error("file does not exist", err4)
+		return
+	}
+
 	err5 := u_recieved.StoreFile("filename1", []byte("some new random data"))
 	if err5 != nil {
 		t.Error("Error when overwriting file data", err5)
@@ -97,6 +110,51 @@ func TestInit(t *testing.T) {
 	}
 }
 
+func TestAppendFile(t *testing.T) {
+	clear()
+	u, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+
+	v := []byte("This is a test")
+	u.StoreFile("file1", v)
+
+	v2, err2 := u.LoadFile("file1")
+	if err2 != nil {
+		t.Error("Failed to upload and download", err2)
+		return
+	}
+	if !reflect.DeepEqual(v, v2) {
+		t.Error("Downloaded file is not the same", v, v2)
+		return
+	}
+
+
+	err3 := u.AppendFile("file1", v)
+	if err3 != nil {
+		t.Error("Failed to append file", err3)
+		return
+	}
+	v4, err4 := u.LoadFile("file1")
+	if err4 != nil {
+		t.Error("Failed to upload and download", err4)
+		return
+	}
+
+	if !reflect.DeepEqual(v4, append(v,v...)) {
+		t.Error("Downloaded file is not the same", v, v2)
+		return
+	}
+
+	err5 := u.AppendFile("file5", v)
+	if err5 == nil {
+		t.Error("File name does not exist", err5)
+		return
+	}
+}
+
 
 func TestStorage(t *testing.T) {
 	clear()
@@ -116,6 +174,19 @@ func TestStorage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(v, v2) {
 		t.Error("Downloaded file is not the same", v, v2)
+		return
+	}
+
+	v3 := []byte("edited")
+	u.StoreFile("file1", v3)
+	
+	v4, err3 := u.LoadFile("file1")
+	if err3 != nil {
+		t.Error("Failed to upload and download", err3)
+		return
+	}
+	if !reflect.DeepEqual(v3, v4) {
+		t.Error("Downloaded file is not the same", v3, v4)
 		return
 	}
 }
@@ -142,14 +213,35 @@ func TestShare(t *testing.T) {
 		t.Error("Failed to initialize user", err)
 		return
 	}
+	
 	u2, err2 := InitUser("bob", "foobar")
 	if err2 != nil {
 		t.Error("Failed to initialize bob", err2)
 		return
 	}
 
+	u3, err3 := InitUser("Bhavna", "fubar2")
+	if err3 != nil {
+		t.Error("Failed to initialize user", err3)
+		return
+	}
+
 	v := []byte("This is a test")
 	u.StoreFile("file1", v)
+
+	v6 := []byte("This is a test 2")
+	u3.StoreFile("file6", v6)
+	v6, err = u3.LoadFile("file6")
+	if err != nil {
+		t.Error("Failed to download the file from alice", err)
+		return
+	}
+
+	accessToken6, err6 := u3.ShareFile("file6", "bob")
+	if err != nil {
+		t.Error("Failed to share the a file", err6)
+		return
+	}
 
 	var v2 []byte
 	var accessToken uuid.UUID
@@ -165,9 +257,29 @@ func TestShare(t *testing.T) {
 		t.Error("Failed to share the a file", err)
 		return
 	}
+	
+
+	_, err = u.ShareFile("file3", "bob")
+	if err == nil {
+		t.Error("File does not exist", err)
+		return
+	}
+
 	err = u2.ReceiveFile("file2", "alice", accessToken)
 	if err != nil {
 		t.Error("Failed to receive the share message", err)
+		return
+	}
+
+	err = u2.ReceiveFile("file2", "alice", accessToken)
+	if err == nil {
+		t.Error("user already received file2", err)
+		return
+	}
+
+	err = u2.ReceiveFile("file2", "Bhavna", accessToken6)
+	if err == nil {
+		t.Error("user already received file2", err)
 		return
 	}
 
@@ -185,38 +297,94 @@ func TestShare(t *testing.T) {
 
 func TestRevokeBeforeRecieve(t *testing.T) {
 	clear()
-	u, err := InitUser("alice", "fubar")
+	alice, err := InitUser("alice", "fubar")
 	if err != nil {
 		t.Error("Failed to initialize user", err)
 		return
 	}
-	u2, err2 := InitUser("bob", "foobar")
+	bob, err2 := InitUser("bob", "foobar")
 	if err2 != nil {
 		t.Error("Failed to initialize bob", err2)
 		return
 	}
 
+	Bhavna, err3 := InitUser("Bhavna", "fubar2")
+	if err3 != nil {
+		t.Error("Failed to initialize Bhavna", err3)
+		return
+	}
+
 	v := []byte("This is a test")
-	u.StoreFile("file1", v)
+	alice.StoreFile("file1", v)
 
 	var accessToken uuid.UUID
 
-	accessToken, err = u.ShareFile("file1", "bob")
+	accessToken, err = alice.ShareFile("file1", "bob")
 	if err != nil {
 		t.Error("Failed to share the a file", err)
 		return
 	}
 
-	err = u.RevokeFile("file1", "bob")
+	err = alice.RevokeFile("file1", "Bhavna")
+	if err == nil {
+		t.Error("File not shared with Bhavna yet", err)
+		return
+	}
+
+	//share file with Bhavna
+	accessToken, err = alice.ShareFile("file1", "Bhavna")
+	if err != nil {
+		t.Error("Failed to share the a file", err)
+		return
+	}
+
+	err = Bhavna.ReceiveFile("file1", "alice", accessToken)
+	if err != nil {
+		t.Error("Able to  recieve file despite being revoked")
+		return
+	}
+	
+
+	// Bhavna can still access the file
+	_, err = Bhavna.LoadFile("file1")
+	if err != nil {
+		t.Error("Bhavna can no longer access the file after bob revoked her", err)
+	}
+
+	// Alice still has access
+	_, err = alice.LoadFile("file1")
+	if err != nil {
+		t.Error("bob was able to kick alice while he was not the creator of the file", err)
+	}
+
+	err = alice.RevokeFile("file1", "bob")
 	if err != nil {
 		t.Error("Failed to revoke the file", err)
 		return
 	}
 
+	err = alice.RevokeFile("file5", "bob")
+	if err == nil {
+		t.Error("file does not exist", err)
+		return
+	}
 
-	err = u2.ReceiveFile("file2", "alice", accessToken)
+
+	err = bob.ReceiveFile("file1", "alice", accessToken)
 	if err == nil {
 		t.Error("Able to  recieve file despite being revoked")
 		return
+	}
+
+	// Alice can still access the file
+	_, err = alice.LoadFile("file1")
+	if err != nil {
+		t.Error("Alice can no longer access the file after she revoked bob", err)
+	}
+
+	// Bhavna can still access the file
+	_, err = Bhavna.LoadFile("file1")
+	if err != nil {
+		t.Error("Bhavna can no longer access the file after bob revoked her 2", err)
 	}
 }
