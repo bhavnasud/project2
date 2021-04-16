@@ -1213,7 +1213,49 @@ func MaliciousShareTest(t *testing.T) {
 	}
 }
 
-//After user A shares a file with user B and later revokes access, user B may try to call ReceiveFile with the original access token to regain access to the file
+//After user A shares a file with user B and later revokes access,
+//user B may try to call ReceiveFile with the original access token
+// to regain access to the file
+func OriginalAccessTokenTest(t *testing.T) {
+	alice, _ := InitUser("alice", "fubar")
+	bob, _ := InitUser("bob", "fubar")
+	accessToken, err := alice.ShareFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+	err = bob.ReceiveFile("file2", "alice", accessToken)
+	err = alice.RevokeFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to revoke the file", err)
+		return
+	}
+
+	err = bob.ReceiveFile("file2", "alice", accessToken)
+	_, err2 := bob.LoadFile("file2") 
+	if err2 == nil {
+		t.Error("Bob able to load file with old access token", err2)
+		return
+	}
+
+	accessToken, err = alice.ShareFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+	err = alice.RevokeFile("file1", "bob")
+	if err != nil {
+		t.Error("Failed to revoke the file", err)
+		return
+	}
+
+	err = bob.ReceiveFile("file2", "alice", accessToken)
+	_, err2 = bob.LoadFile("file2") 
+	if err2 == nil {
+		t.Error("Bob able to load file with old access token", err2)
+		return
+	}
+}
 
 
 
