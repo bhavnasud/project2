@@ -1188,6 +1188,33 @@ func HugeTest(t *testing.T) {
 	}
 }
 
+//person not in sharing tree tries to share file with someone 
+//(by  generating their own message)
+func MaliciousShareTest(t *testing.T) {
+	alice, _ := InitUser("alice", "fubar")
+	InitUser("bob", "fubar")
+	Bhavna, _ := InitUser("Bhavna", "fubar")
+
+
+	err := alice.StoreFile("file1", []byte("some random data"))
+	if err != nil {
+		t.Error("Error when storing file", err)
+		return
+	}
+
+	accessToken := uuid.New()
+	originalDataStore := userlib.DatastoreGetMap()
+	originalDataStore[accessToken] = []byte("malicious content")
+	
+	err = Bhavna.ReceiveFile("file2", "bob", accessToken)
+	if err == nil {
+		t.Error("Bhavna able to recieve file when access token malicious", err)
+		return
+	}
+}
+
+//After user A shares a file with user B and later revokes access, user B may try to call ReceiveFile with the original access token to regain access to the file
+
 
 
 
