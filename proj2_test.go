@@ -574,10 +574,14 @@ func findMapDifference(original map[uuid.UUID][]byte, newmap map[uuid.UUID][]byt
 func TestFileIntegrityCheck(t *testing.T) {
 	clear()
 	alice, err := InitUser("alice", "fubar")
+
 	if err != nil {
 		t.Error("Failed to initialize user", err)
 		return
 	}
+	InitUser("bob", "fubar")
+	InitUser("bhavna", "fubar")
+
 
 
 	originalDataStore := copyMap(userlib.DatastoreGetMap())
@@ -585,6 +589,7 @@ func TestFileIntegrityCheck(t *testing.T) {
 	alice.StoreFile("file1", v)
 	newDataStore := userlib.DatastoreGetMap()
 	newkeys := findMapDifference(originalDataStore, newDataStore)
+	alice.ShareFile("file1", "bhavna")
 	
 	if len(newkeys) > 0 {
 		newDataStore[newkeys[0]] = []byte("EvanBot is the biggest threat")
@@ -594,6 +599,24 @@ func TestFileIntegrityCheck(t *testing.T) {
 			t.Error("Successfully loaded file with no integrity")
 			return
 		} 
+
+		err = alice.AppendFile("file1", []byte("to append"))
+		if err == nil {
+			t.Error("Successfully appended to file with no integrity")
+			return
+		} 
+
+		_, err = alice.ShareFile("file1", "bob")
+		if err == nil {
+			t.Error("Shared compromised file", err)
+			return
+		}
+
+		err = alice.RevokeFile("file1", "bhavna")
+		if err == nil {
+			t.Error("Revoked compromised file", err)
+			return
+		}
 	}
 	
 }
