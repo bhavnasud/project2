@@ -8,7 +8,7 @@ import (
 	_ "encoding/json"
 	_ "errors"
 	"reflect"
-	_ "strconv"
+	"strconv"
 	_ "strings"
 	"testing"
 
@@ -594,11 +594,6 @@ func TestFileIntegrityCheck(t *testing.T) {
 			t.Error("Successfully loaded file with no integrity")
 			return
 		} 
-		_, err = alice.LoadFile("file1")
-		if err == nil {
-			t.Error("Successfully loaded file with no integrity")
-			return
-		} 
 	}
 	
 }
@@ -962,8 +957,238 @@ func TestSomeoneElseRecievingFile(t *testing.T) {
 		t.Error("Bob did not load file correctly", err)
 		return
 	}  
-
 }
+
+func HugeTest(t *testing.T) {
+	var users []*User 
+	//initialize 10 users
+	for i := 0; i < 10; i++ {
+		newUser, _ := InitUser(strconv.Itoa(i), "testpassword")
+		users = append(users, newUser)
+	}
+
+	//user 0 stores file
+	v := []byte("Initial data")
+	users[0].StoreFile("file0", v)
+
+	//make sharing tree:
+	//0 shares with 1 and 2
+	accessToken, err := users[0].ShareFile("file0", "1")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[1].ReceiveFile("file1", "0", accessToken)
+	if err != nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+
+	accessToken, err = users[0].ShareFile("file0", "2")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[2].ReceiveFile("file2", "0", accessToken)
+	if err == nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+
+	//1 shares with 3 and 4
+	accessToken, err = users[1].ShareFile("file1", "3")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[3].ReceiveFile("file3", "1", accessToken)
+	if err != nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+
+	accessToken, err = users[1].ShareFile("file1", "4")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[4].ReceiveFile("file4", "1", accessToken)
+	if err == nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+
+	//2 shares with 5 and 6
+	accessToken, err = users[2].ShareFile("file2", "5")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[5].ReceiveFile("file5", "2", accessToken)
+	if err != nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+
+	accessToken, err = users[2].ShareFile("file2", "6")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[6].ReceiveFile("file6", "2", accessToken)
+	if err == nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+
+	//3 shares with 7
+	accessToken, err = users[3].ShareFile("file3", "7")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[7].ReceiveFile("file7", "3", accessToken)
+	if err != nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+	//4 shares with 8
+	accessToken, err = users[4].ShareFile("file4", "8")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[8].ReceiveFile("file8", "4", accessToken)
+	if err != nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+	//5 shares with 9
+	accessToken, err = users[5].ShareFile("file5", "9")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[9].ReceiveFile("file9", "5", accessToken)
+	if err != nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+
+	//revoke from user 1
+	err = users[0].RevokeFile("file0", "1")
+	if err != nil {
+		t.Error("Failed to revoke the file", err)
+		return
+	}
+	//check that 1, 3, 4, 7, and 8 don't have access
+	noAccess := []int{1, 3, 4, 7, 8}
+	var fileData []byte
+	for i := 0; i < len(noAccess); i++ {
+		_, err = users[i].LoadFile("file" + strconv.Itoa(i))
+		if err == nil {
+			t.Error("This user shouldn't have had access to file", err)
+			return
+		}
+	}
+	//check that 0, 2, 5, 6, and 9 still have access
+	stillAccess := []int{0, 2, 5, 6, 9}
+	for i := 0; i < len(stillAccess); i++ {
+		fileData, err = users[i].LoadFile("file" + strconv.Itoa(i))
+		if err != nil || !reflect.DeepEqual(fileData, v) {
+			t.Error("This user should have had access to file", err)
+			return
+		}
+	}
+
+	//user 5 shares with user 4 
+	accessToken, err = users[5].ShareFile("file5", "4")
+	if err != nil {
+		t.Error("Failed to share the file", err)
+		return
+	}
+
+	err = users[4].ReceiveFile("file4", "5", accessToken)
+	if err != nil {
+		t.Error("Unable to recieve file", err)
+		return
+	}
+	//check that 1,3, 7, and 8 don't have access
+	noAccess = []int{1, 3, 7, 8}
+	for i := 0; i < len(noAccess); i++ {
+		_, err = users[i].LoadFile("file" + strconv.Itoa(i))
+		if err == nil {
+			t.Error("This user shouldn't have had access to file", err)
+			return
+		}
+	}
+	//check that 0, 2, 4, 5, 6, and 9 still have access
+	stillAccess = []int{0, 2, 4, 5, 6, 9}
+	for i := 0; i < len(stillAccess); i++ {
+		fileData, err = users[i].LoadFile("file" + strconv.Itoa(i))
+		if err != nil || !reflect.DeepEqual(fileData, v) {
+			t.Error("This user should have had access to file", err)
+			return
+		}
+	}
+
+	//call append with 5
+	emptyV := make([]byte, 0)
+	err = users[5].AppendFile("file5", emptyV)
+	if err != nil {
+		t.Error("Failed to append file", err)
+		return
+	}
+	err = users[5].AppendFile("file5", v)
+	if err != nil {
+		t.Error("Failed to append file", err)
+		return
+	}
+	//check that 0, 2, 4, 5, 6, and 9 see changes
+	for i := 0; i < len(stillAccess); i++ {
+		fileData, err = users[i].LoadFile("file" + strconv.Itoa(i))
+		if err != nil || !reflect.DeepEqual(fileData, append(v, v...)) {
+			t.Error("This user should have had access to file", err)
+			return
+		}
+	}
+
+	//call revoke on 5
+	err = users[0].RevokeFile("file0", "5")
+	if err != nil {
+		t.Error("Failed to revoke the file", err)
+		return
+	}
+	//check that 0, 2, 6 have access
+	stillAccess = []int{0, 2, 6}
+	for i := 0; i < len(stillAccess); i++ {
+		fileData, err = users[i].LoadFile("file" + strconv.Itoa(i))
+		if err != nil || !reflect.DeepEqual(fileData, append(v, v...)) {
+			t.Error("This user should have had access to file", err)
+			return
+		}
+	}
+	//check that 5, 4, 9 don't have access
+	noAccess = []int{5, 4, 9}
+	for i := 0; i < len(noAccess); i++ {
+		_, err = users[i].LoadFile("file" + strconv.Itoa(i))
+		if err == nil {
+			t.Error("This user shouldn't have had access to file", err)
+			return
+		}
+	}
+}
+
+
 
 
 
